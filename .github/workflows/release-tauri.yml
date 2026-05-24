@@ -103,7 +103,7 @@ jobs:
           releaseBody: "Automated desktop build for ${{ steps.release.outputs.tag }}."
           releaseDraft: true
           prerelease: false
-          assetNamePattern: "[name]-v[version]-[platform]-[arch]-[bundle][ext]"
+          assetNamePattern: "[name]-v[version]-[platform]-[arch][ext]"
 
       - name: Upload SHA256 checksums
         shell: bash
@@ -137,17 +137,13 @@ jobs:
             const normalized = file.replaceAll(path.sep, '/');
             const basename = path.basename(file);
             const ext = extensions.find((item) => basename.endsWith(item)) || path.extname(file);
-            const bundle = ext.includes('.app.tar.gz') ? 'app'
-              : ext.includes('.dmg') ? 'dmg'
-              : ext.includes('.msi') ? 'msi'
-              : 'bundle';
             const platform = normalized.includes('windows') || ext.includes('.msi') ? 'windows' : 'darwin';
             let arch = 'x64';
             if (normalized.includes('aarch64-apple-darwin')) arch = 'aarch64';
             else if (normalized.includes('x86_64-apple-darwin')) arch = 'x64';
             else if (basename.includes('_arm64')) arch = 'arm64';
             else if (basename.includes('_x64')) arch = 'x64';
-            return { ext, bundle, platform, arch };
+            return { ext, platform, arch };
           }
 
           const checksumFiles = [];
@@ -162,8 +158,8 @@ jobs:
             if (!fs.existsSync(filePath) || fs.statSync(filePath).isDirectory()) {
               continue;
             }
-            const { ext, bundle, platform, arch } = artifactInfo(filePath);
-            const assetName = `autodns-v${version}-${platform}-${arch}-${bundle}${ext}`;
+            const { ext, platform, arch } = artifactInfo(filePath);
+            const assetName = `autodns-v${version}-${platform}-${arch}${ext}`;
             const checksum = crypto
               .createHash('sha256')
               .update(fs.readFileSync(filePath))
