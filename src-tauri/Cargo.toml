@@ -1,12 +1,12 @@
 [package]
 name = "autodns-tauri"
-version = "0.1.1"
+version = "0.1.2"
 description = "autodns desktop app powered by Tauri"
 authors = ["autodns"]
 edition = "2021"
 
 [lib]
-name = "autodns_tauri"
+name = "autodns_tauri_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]

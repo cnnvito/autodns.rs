@@ -1,6 +1,8 @@
 use crate::config::desktop_config_dir;
 use crate::desktop::DesktopPreferences;
-use anyhow::{anyhow, Context, Result};
+#[cfg(not(target_os = "windows"))]
+use anyhow::anyhow;
+use anyhow::{Context, Result};
 use std::fs;
 use std::path::PathBuf;
 

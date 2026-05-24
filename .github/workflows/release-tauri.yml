@@ -41,7 +41,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Resolve release tag
         id: release
@@ -54,7 +54,7 @@ jobs:
           fi
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
@@ -91,6 +91,7 @@ jobs:
           echo "$wix" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
       - name: Build and upload Tauri bundles
+        id: tauri
         uses: tauri-apps/tauri-action@v0.6.2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -102,3 +103,83 @@ jobs:
           releaseBody: "Automated desktop build for ${{ steps.release.outputs.tag }}."
           releaseDraft: true
           prerelease: false
+          assetNamePattern: "[name]-v[version]-[platform]-[arch]-[bundle][ext]"
+
+      - name: Upload SHA256 checksums
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+          ARTIFACT_PATHS: ${{ steps.tauri.outputs.artifactPaths }}
+          APP_VERSION: ${{ steps.tauri.outputs.appVersion }}
+        run: |
+          node <<'JS'
+          const crypto = require('node:crypto');
+          const fs = require('node:fs');
+          const path = require('node:path');
+
+          const artifactPaths = JSON.parse(process.env.ARTIFACT_PATHS || '[]');
+          const version = process.env.APP_VERSION;
+          const checksumDir = path.resolve('src-tauri', 'target', 'release-checksums');
+          fs.mkdirSync(checksumDir, { recursive: true });
+
+          const extensions = [
+            '.app.tar.gz.sig',
+            '.app.tar.gz',
+            '.dmg',
+            '.msi.zip.sig',
+            '.msi.zip',
+            '.msi.sig',
+            '.msi',
+          ];
+
+          function artifactInfo(file) {
+            const normalized = file.replaceAll(path.sep, '/');
+            const basename = path.basename(file);
+            const ext = extensions.find((item) => basename.endsWith(item)) || path.extname(file);
+            const bundle = ext.includes('.app.tar.gz') ? 'app'
+              : ext.includes('.dmg') ? 'dmg'
+              : ext.includes('.msi') ? 'msi'
+              : 'bundle';
+            const platform = normalized.includes('windows') || ext.includes('.msi') ? 'windows' : 'darwin';
+            let arch = 'x64';
+            if (normalized.includes('aarch64-apple-darwin')) arch = 'aarch64';
+            else if (normalized.includes('x86_64-apple-darwin')) arch = 'x64';
+            else if (basename.includes('_arm64')) arch = 'arm64';
+            else if (basename.includes('_x64')) arch = 'x64';
+            return { ext, bundle, platform, arch };
+          }
+
+          const checksumFiles = [];
+          for (const artifactPath of artifactPaths) {
+            let filePath = artifactPath;
+            if (fs.existsSync(artifactPath) && fs.statSync(artifactPath).isDirectory()) {
+              const archivedAppPath = `${artifactPath}.tar.gz`;
+              if (fs.existsSync(archivedAppPath)) {
+                filePath = archivedAppPath;
+              }
+            }
+            if (!fs.existsSync(filePath) || fs.statSync(filePath).isDirectory()) {
+              continue;
+            }
+            const { ext, bundle, platform, arch } = artifactInfo(filePath);
+            const assetName = `autodns-v${version}-${platform}-${arch}-${bundle}${ext}`;
+            const checksum = crypto
+              .createHash('sha256')
+              .update(fs.readFileSync(filePath))
+              .digest('hex');
+            const checksumPath = path.join(checksumDir, `${assetName}.sha256`);
+            fs.writeFileSync(checksumPath, `${checksum}  ${assetName}\n`);
+            checksumFiles.push(checksumPath);
+          }
+
+          fs.writeFileSync(
+            path.join(checksumDir, 'files.txt'),
+            checksumFiles.join('\n') + (checksumFiles.length ? '\n' : '')
+          );
+          JS
+
+          while IFS= read -r checksum_file; do
+            [ -n "$checksum_file" ] || continue
+            gh release upload "$RELEASE_TAG" "$checksum_file" --clobber
+          done < src-tauri/target/release-checksums/files.txt
