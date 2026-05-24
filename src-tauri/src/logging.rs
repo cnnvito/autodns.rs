@@ -1,0 +1,98 @@
+use chrono::Utc;
+use parking_lot::Mutex;
+use serde::{Deserialize, Serialize};
+use std::collections::VecDeque;
+use std::sync::Arc;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum LogLevel {
+    Debug,
+    Info,
+    Warn,
+    Error,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LogEntry {
+    pub time: String,
+    pub level: String,
+    pub message: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct LogBuffer {
+    inner: Arc<Mutex<VecDeque<LogEntry>>>,
+    min_level: Arc<Mutex<LogLevel>>,
+    capacity: usize,
+}
+
+impl LogBuffer {
+    pub fn new(capacity: usize) -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(VecDeque::with_capacity(capacity))),
+            min_level: Arc::new(Mutex::new(LogLevel::Info)),
+            capacity,
+        }
+    }
+
+    pub fn set_level(&self, level: &str) {
+        *self.min_level.lock() = LogLevel::from_str(level);
+    }
+
+    pub fn push(&self, level: impl Into<String>, message: impl Into<String>) {
+        let level = level.into();
+        if LogLevel::from_str(&level) < *self.min_level.lock() {
+            return;
+        }
+        let mut entries = self.inner.lock();
+        if entries.len() >= self.capacity {
+            entries.pop_front();
+        }
+        entries.push_back(LogEntry {
+            time: Utc::now().to_rfc3339(),
+            level,
+            message: message.into(),
+        });
+    }
+
+    pub fn entries(&self) -> Vec<LogEntry> {
+        self.inner.lock().iter().cloned().collect()
+    }
+
+    pub fn clear(&self) {
+        self.inner.lock().clear();
+    }
+}
+
+impl LogLevel {
+    fn from_str(level: &str) -> Self {
+        match level.to_lowercase().as_str() {
+            "debug" => Self::Debug,
+            "warn" => Self::Warn,
+            "error" => Self::Error,
+            _ => Self::Info,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn log_buffer_filters_below_min_level() {
+        let logs = LogBuffer::new(10);
+        logs.set_level("warn");
+
+        logs.push("debug", "debug message");
+        logs.push("info", "info message");
+        logs.push("warn", "warn message");
+        logs.push("error", "error message");
+
+        let entries = logs.entries();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].level, "warn");
+        assert_eq!(entries[1].level, "error");
+    }
+}
