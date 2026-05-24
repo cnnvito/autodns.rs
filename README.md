@@ -79,6 +79,8 @@ git tag v0.1.0
 git push origin v0.1.0
 ```
 
+The workflow builds desktop bundles and uploads them to a draft GitHub Release.
+
 ## Project Layout
 
 ```text

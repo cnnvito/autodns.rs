@@ -88,11 +88,11 @@ jobs:
           echo "$wix" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
       - name: Build and upload Tauri bundles
-        uses: tauri-apps/tauri-action@v1
+        uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          projectPath: .
+          projectPath: src-tauri
           args: ${{ matrix.args }}
           tagName: ${{ steps.release.outputs.tag }}
           releaseName: "autodns desktop ${{ steps.release.outputs.tag }}"
