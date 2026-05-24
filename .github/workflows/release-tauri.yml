@@ -27,16 +27,17 @@ jobs:
       matrix:
         include:
           - name: Windows x64 MSI
-            os: windows-latest
+            os: windows-2025
             args: "--bundles msi"
           - name: macOS Apple Silicon
-            os: macos-latest
+            os: macos-15
             args: "--target aarch64-apple-darwin"
           - name: macOS Intel
-            os: macos-13
+            os: macos-15-intel
             args: "--target x86_64-apple-darwin"
 
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
 
     steps:
       - name: Checkout
@@ -83,12 +84,14 @@ jobs:
         if: runner.os == 'Windows'
         shell: powershell
         run: |
-          choco install wixtoolset --version=3.14.1 -y
           $wix = "${env:ProgramFiles(x86)}\WiX Toolset v3.14\bin"
+          if (!(Test-Path (Join-Path $wix "candle.exe"))) {
+            choco install wixtoolset -y
+          }
           echo "$wix" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
       - name: Build and upload Tauri bundles
-        uses: tauri-apps/tauri-action@v0
+        uses: tauri-apps/tauri-action@v0.6.2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:

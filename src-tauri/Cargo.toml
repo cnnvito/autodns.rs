@@ -1,6 +1,6 @@
 [package]
 name = "autodns-tauri"
-version = "0.1.0"
+version = "0.1.1"
 description = "autodns desktop app powered by Tauri"
 authors = ["autodns"]
 edition = "2021"
