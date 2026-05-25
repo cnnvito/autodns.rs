@@ -146,6 +146,7 @@ export type ProxyHealth = {
 };
 
 export type LogEntry = {
+  id: number;
   time: string;
   level: string;
   message: string;

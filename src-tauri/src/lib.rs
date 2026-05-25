@@ -38,6 +38,11 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .manage(DesktopService::new())
         .setup(|app| {
+            let app_handle = app.handle().clone();
+            app.state::<DesktopService>()
+                .set_log_listener(move |entry| {
+                    let _ = app_handle.emit("desktop:log-entry", entry);
+                });
             if let Err(err) = app.state::<DesktopService>().initialize() {
                 app.state::<DesktopService>()
                     .record_error("initialize local database", &err.to_string());
@@ -158,6 +163,7 @@ fn setup_tray(app: &mut tauri::App) -> tauri::Result<()> {
                         service.record_error("tray service toggle", &err.to_string());
                     }
                     refresh_tray_state(&app);
+                    emit_desktop_status(&app);
                 });
             }
             TRAY_RESTART_SERVICE => {
@@ -172,6 +178,7 @@ fn setup_tray(app: &mut tauri::App) -> tauri::Result<()> {
                         }
                     }
                     refresh_tray_state(&app);
+                    emit_desktop_status(&app);
                 });
             }
             TRAY_CLEAR_CACHE => {
@@ -226,4 +233,9 @@ pub(crate) fn refresh_tray_state(app: &tauri::AppHandle) {
         let _ = tray_state.clear_cache.set_enabled(false);
         let _ = tray_state.tray.set_tooltip(Some("已停止"));
     }
+}
+
+pub(crate) fn emit_desktop_status(app: &tauri::AppHandle) {
+    let status = app.state::<DesktopService>().status();
+    let _ = app.emit("desktop:status", status);
 }

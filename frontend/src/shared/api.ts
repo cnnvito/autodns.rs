@@ -58,6 +58,10 @@ export async function stopAutodns(): Promise<void> {
 
 export async function loadStatus(): Promise<DesktopStatus> {
   const status = await invoke<DesktopStatus>("status").catch(() => emptyStatus);
+  return normalizeStatus(status);
+}
+
+export function normalizeStatus(status: DesktopStatus): DesktopStatus {
   return {
     ...emptyStatus,
     ...status,
@@ -66,8 +70,8 @@ export async function loadStatus(): Promise<DesktopStatus> {
   };
 }
 
-export async function loadLogs(): Promise<LogEntry[]> {
-  const logs = await invoke<LogEntry[]>("recent_logs").catch(() => []);
+export async function loadLogs(since?: number): Promise<LogEntry[]> {
+  const logs = await invoke<LogEntry[]>("recent_logs", { since: since ?? null }).catch(() => []);
   return Array.isArray(logs) ? logs : [];
 }
 

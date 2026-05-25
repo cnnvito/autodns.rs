@@ -12,7 +12,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::BufReader;
 use std::net::{IpAddr, SocketAddr};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 use tokio::io::{split, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadHalf, WriteHalf};
 use tokio::net::{TcpListener, TcpStream, UdpSocket};
@@ -133,7 +133,7 @@ impl RuntimeState {
 
 #[derive(Clone)]
 pub(crate) struct Resolver {
-    default_upstreams: Vec<String>,
+    default_upstreams: Arc<[String]>,
     hosts: Hosts,
     routes: Routes,
     cache: DnsCache,
@@ -230,7 +230,7 @@ pub(crate) struct Routes {
 struct RouteEntry {
     id: i32,
     domain: String,
-    upstreams: Vec<String>,
+    upstreams: Arc<[String]>,
 }
 
 #[derive(Clone, Default)]
@@ -274,6 +274,7 @@ struct CacheEntry {
     response: Vec<u8>,
     expires_at: Instant,
     original_ttls: Vec<u32>,
+    ttl_offsets: Vec<usize>,
 }
 
 #[derive(Clone)]
@@ -313,7 +314,7 @@ struct UpstreamDiagnostics {
 #[derive(Clone)]
 struct Question {
     id: u16,
-    qname: String,
+    normalized_qname: String,
     qtype: u16,
     qclass: u16,
     question_end: usize,
@@ -524,7 +525,8 @@ fn build_resolver(cfg: &CoreConfig, logs: LogBuffer) -> Result<Resolver> {
             .upstreams
             .iter()
             .map(|item| item.name.clone())
-            .collect(),
+            .collect::<Vec<_>>()
+            .into(),
         hosts: compile_hosts(&cfg.resolver.hosts)?,
         routes: compile_routes(
             &cfg.resolver.routes,
@@ -645,13 +647,18 @@ fn load_server_tls(cert_file: &str, key_file: &str) -> Result<Arc<RustlsServerCo
 }
 
 fn client_tls_config() -> Arc<RustlsClientConfig> {
-    let mut roots = RootCertStore::empty();
-    roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-    Arc::new(
-        RustlsClientConfig::builder()
-            .with_root_certificates(roots)
-            .with_no_client_auth(),
-    )
+    static CLIENT_TLS_CONFIG: OnceLock<Arc<RustlsClientConfig>> = OnceLock::new();
+    CLIENT_TLS_CONFIG
+        .get_or_init(|| {
+            let mut roots = RootCertStore::empty();
+            roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+            Arc::new(
+                RustlsClientConfig::builder()
+                    .with_root_certificates(roots)
+                    .with_no_client_auth(),
+            )
+        })
+        .clone()
 }
 
 async fn run_udp_listener(
@@ -1025,9 +1032,11 @@ impl Resolver {
             return Ok(resp);
         }
 
-        let (route_id, selected) = self.routes.select(&question.qname, &self.default_upstreams);
+        let (route_id, selected) = self
+            .routes
+            .select(&question.normalized_qname, &self.default_upstreams);
         let key = CacheKey {
-            qname: normalize_domain_lossy(&question.qname),
+            qname: question.normalized_qname.clone(),
             qtype: question.qtype,
             qclass: question.qclass,
             route_id,
@@ -1037,8 +1046,8 @@ impl Resolver {
         }
 
         let mut last_negative = None;
-        for name in selected {
-            let Some(client) = self.clients.get(&name) else {
+        for name in selected.iter() {
+            let Some(client) = self.clients.get(name) else {
                 continue;
             };
             let started = Instant::now();
@@ -1047,25 +1056,25 @@ impl Resolver {
                     let resp = self.filter_response(resp);
                     match classify(&resp) {
                         ResponseClass::Answer => {
-                            self.health.record_query_success(&name, started.elapsed());
+                            self.health.record_query_success(name, started.elapsed());
                             self.cache.set(key.clone(), &resp, false);
                             return Ok(resp);
                         }
                         ResponseClass::Negative => {
                             self.health
-                                .record_failure(&name, "upstream returned no answer");
+                                .record_failure(name, "upstream returned no answer");
                             last_negative = Some(resp);
                         }
                         ResponseClass::Retry => {
                             self.health
-                                .record_failure(&name, "upstream returned retryable response");
+                                .record_failure(name, "upstream returned retryable response");
                         }
                     }
                 }
                 Err(err) => {
                     self.logs
                         .push("debug", format!("upstream {name} exchange failed: {err}"));
-                    self.health.record_failure(&name, err.to_string());
+                    self.health.record_failure(name, err.to_string());
                 }
             }
         }
@@ -1099,10 +1108,7 @@ impl Resolver {
     }
 
     fn resolve_hosts(&self, req: &[u8], question: &Question) -> Option<Vec<u8>> {
-        let entry = self
-            .hosts
-            .entries
-            .get(&normalize_domain_lossy(&question.qname))?;
+        let entry = self.hosts.entries.get(&question.normalized_qname)?;
         match question.qtype {
             TYPE_A if !entry.ipv4.is_empty() => {
                 Some(hosts_response(req, question, &entry.ipv4, &[]))
@@ -2094,7 +2100,12 @@ impl DnsCache {
             .as_secs()
             .min(u32::MAX as u64) as u32;
         if !entry.original_ttls.is_empty() {
-            let _ = rewrite_ttls(&mut resp, &entry.original_ttls, remaining);
+            let _ = rewrite_ttls(
+                &mut resp,
+                &entry.original_ttls,
+                &entry.ttl_offsets,
+                remaining,
+            );
         }
         Some(resp)
     }
@@ -2103,10 +2114,10 @@ impl DnsCache {
         if !self.enabled || resp.len() > self.max_entry_size {
             return;
         }
-        let original_ttls = if negative {
-            Vec::new()
+        let (original_ttls, ttl_offsets) = if negative {
+            (Vec::new(), Vec::new())
         } else {
-            rr_ttls(resp).unwrap_or_default()
+            rr_ttls_with_offsets(resp).unwrap_or_default()
         };
         let ttl = if negative && self.negative_ttl > 0 {
             self.negative_ttl
@@ -2126,6 +2137,7 @@ impl DnsCache {
                 response: resp.to_vec(),
                 expires_at: Instant::now() + Duration::from_secs(ttl as u64),
                 original_ttls,
+                ttl_offsets,
             },
         );
     }
@@ -2291,7 +2303,7 @@ pub(crate) fn compile_routes(raw_rules: &[String], upstreams: &HashSet<String>) 
         let entry = RouteEntry {
             id: (i + 1) as i32,
             domain: domain.clone(),
-            upstreams: names,
+            upstreams: names.into(),
         };
         match match_type {
             MatchType::Exact => {
@@ -2309,21 +2321,21 @@ pub(crate) fn compile_routes(raw_rules: &[String], upstreams: &HashSet<String>) 
 }
 
 impl Routes {
-    fn select(&self, qname: &str, defaults: &[String]) -> (i32, Vec<String>) {
-        let domain = normalize_domain_lossy(qname);
-        if let Some(entry) = self.exact.get(&domain) {
-            return (entry.id, entry.upstreams.clone());
+    // `domain` must already be normalized; parsing computes it once per query.
+    fn select<'a>(&'a self, domain: &str, defaults: &'a [String]) -> (i32, &'a [String]) {
+        if let Some(entry) = self.exact.get(domain) {
+            return (entry.id, &entry.upstreams);
         }
         let matched = self
             .suffix
-            .longest_match(&domain, true)
+            .longest_match(domain, true)
             .into_iter()
-            .chain(self.wildcard.longest_match(&domain, false))
+            .chain(self.wildcard.longest_match(domain, false))
             .max_by_key(|entry| entry.domain.len());
         if let Some(entry) = matched {
-            (entry.id, entry.upstreams.clone())
+            (entry.id, &entry.upstreams)
         } else {
-            (0, defaults.to_vec())
+            (0, defaults)
         }
     }
 }
@@ -2503,9 +2515,10 @@ fn parse_question(req: &[u8]) -> Result<Question> {
     }
     let qtype = u16::from_be_bytes([req[offset], req[offset + 1]]);
     let qclass = u16::from_be_bytes([req[offset + 2], req[offset + 3]]);
+    let normalized_qname = normalize_domain_lossy(&labels.join("."));
     Ok(Question {
         id: u16::from_be_bytes([req[0], req[1]]),
-        qname: labels.join("."),
+        normalized_qname,
         qtype,
         qclass,
         question_end: offset + 4,
@@ -2882,10 +2895,11 @@ fn min_ttl_from_values(ttls: &[u32]) -> u32 {
     ttls.iter().copied().min().unwrap_or(0)
 }
 
-fn rr_ttls(resp: &[u8]) -> Result<Vec<u32>> {
-    let mut ttl_offsets = rr_ttl_offsets(resp)?;
-    ttl_offsets
-        .drain(..)
+fn rr_ttls_with_offsets(resp: &[u8]) -> Result<(Vec<u32>, Vec<usize>)> {
+    let ttl_offsets = rr_ttl_offsets(resp)?;
+    let ttls = ttl_offsets
+        .iter()
+        .copied()
         .map(|offset| {
             if offset + 4 > resp.len() {
                 return Err(anyhow!("dns rr ttl is truncated"));
@@ -2897,15 +2911,32 @@ fn rr_ttls(resp: &[u8]) -> Result<Vec<u32>> {
                 resp[offset + 3],
             ]))
         })
-        .collect()
+        .collect::<Result<Vec<_>>>()?;
+    Ok((ttls, ttl_offsets))
 }
 
-fn rewrite_ttls(resp: &mut [u8], original_ttls: &[u32], remaining: u32) -> Result<()> {
-    let ttl_offsets = rr_ttl_offsets(resp)?;
+#[cfg(test)]
+fn rr_ttls(resp: &[u8]) -> Result<Vec<u32>> {
+    rr_ttls_with_offsets(resp).map(|(ttls, _)| ttls)
+}
+
+fn rewrite_ttls(
+    resp: &mut [u8],
+    original_ttls: &[u32],
+    ttl_offsets: &[usize],
+    remaining: u32,
+) -> Result<()> {
     if ttl_offsets.len() != original_ttls.len() {
         return Err(anyhow!("dns cached ttl count mismatch"));
     }
-    for (offset, original) in ttl_offsets.into_iter().zip(original_ttls.iter().copied()) {
+    for (offset, original) in ttl_offsets
+        .iter()
+        .copied()
+        .zip(original_ttls.iter().copied())
+    {
+        if offset + 4 > resp.len() {
+            return Err(anyhow!("dns rr ttl is truncated"));
+        }
         let ttl = original.min(remaining);
         resp[offset..offset + 4].copy_from_slice(&ttl.to_be_bytes());
     }
@@ -3111,26 +3142,11 @@ mod tests {
         )
         .expect("compile routes");
 
-        assert_eq!(
-            routes.select("www.example.com", &[]),
-            (3, vec!["c".to_string()])
-        );
-        assert_eq!(
-            routes.select("v1.api.example.com", &[]),
-            (2, vec!["b".to_string()])
-        );
-        assert_eq!(
-            routes.select("example.com", &[]),
-            (1, vec!["a".to_string()])
-        );
-        assert_eq!(
-            routes.select("sub.example.net", &[]),
-            (4, vec!["d".to_string()])
-        );
-        assert_eq!(
-            routes.select("example.net", &["a".to_string()]),
-            (0, vec!["a".to_string()])
-        );
+        assert_route(&routes, "www.example.com", &[], 3, &["c"]);
+        assert_route(&routes, "v1.api.example.com", &[], 2, &["b"]);
+        assert_route(&routes, "example.com", &[], 1, &["a"]);
+        assert_route(&routes, "sub.example.net", &[], 4, &["d"]);
+        assert_route(&routes, "example.net", &["a".to_string()], 0, &["a"]);
     }
 
     #[test]
@@ -3141,13 +3157,13 @@ mod tests {
         let upstreams = ["cn"].into_iter().map(ToString::to_string).collect();
         let routes = compile_routes(&["suffix:例子.测试=cn".to_string()], &upstreams)
             .expect("compile routes");
-        assert_eq!(
-            routes.select("www.xn--fsqu00a.xn--0zwm56d", &[]),
-            (1, vec!["cn".to_string()])
-        );
-        assert_eq!(
-            routes.select("www.例子.测试", &[]),
-            (1, vec!["cn".to_string()])
+        assert_route(&routes, "www.xn--fsqu00a.xn--0zwm56d", &[], 1, &["cn"]);
+        assert_route(
+            &routes,
+            &normalize_domain_lossy("www.例子.测试"),
+            &[],
+            1,
+            &["cn"],
         );
     }
 
@@ -3280,6 +3296,23 @@ mod tests {
             qclass: CLASS_IN,
             route_id: 0,
         }
+    }
+
+    fn assert_route(
+        routes: &Routes,
+        domain: &str,
+        defaults: &[String],
+        expected_id: i32,
+        expected_upstreams: &[&str],
+    ) {
+        let (route_id, upstreams) = routes.select(domain, defaults);
+        let expected = expected_upstreams
+            .iter()
+            .copied()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>();
+        assert_eq!(route_id, expected_id);
+        assert_eq!(upstreams, expected.as_slice());
     }
 
     fn success_response_with_answer(id: u16) -> Vec<u8> {

@@ -12,6 +12,7 @@ import {
   loadPreferences,
   loadStatus,
   loadSystemDnsStatus,
+  normalizeStatus,
   quitApp,
   restoreSystemDns,
   saveConfig,
@@ -41,8 +42,7 @@ const defaultPreferences: DesktopPreferences = {
   trayMessage: ""
 };
 
-const STATUS_REFRESH_MS = 1500;
-const LOGS_REFRESH_MS = 3000;
+const STATUS_REFRESH_MS = 10000;
 
 function applyOptimisticSystemDnsSettings(status: SystemDnsStatus, settings: SystemDnsSettings): SystemDnsStatus {
   const selectedAdapterIds = new Set(settings.selectedAdapterIds);
@@ -85,6 +85,7 @@ export function App() {
   const lastRuntimeError = useRef("");
   const pendingSystemDnsSave = useRef(0);
   const lastSystemDnsSaveId = useRef(0);
+  const lastLogId = useRef(0);
 
   const dismissNotification = useCallback((id: number) => {
     setNotifications((items) => items.filter((item) => item.id !== id));
@@ -100,12 +101,27 @@ export function App() {
     notify("error", title, errorMessage(err));
   }, [notify]);
 
+  const appendLogs = useCallback((items: LogEntry[]) => {
+    if (!items.length) {
+      return;
+    }
+    setLogs((current) => {
+      const seen = new Set(current.map((entry) => entry.id));
+      const next = [...current];
+      for (const item of items) {
+        if (seen.has(item.id)) {
+          continue;
+        }
+        seen.add(item.id);
+        next.push(item);
+        lastLogId.current = Math.max(lastLogId.current, item.id);
+      }
+      return next.slice(-1000);
+    });
+  }, []);
+
   async function refreshStatus() {
     setStatus(await loadStatus());
-  }
-
-  async function refreshLogs() {
-    setLogs(await loadLogs());
   }
 
   async function refreshSystemDns(force = false) {
@@ -116,9 +132,9 @@ export function App() {
   }
 
   async function refresh(forceSystemDns = false) {
-    const [nextStatus, nextLogs] = await Promise.all([loadStatus(), loadLogs()]);
+    const [nextStatus, nextLogs] = await Promise.all([loadStatus(), loadLogs(lastLogId.current)]);
     setStatus(nextStatus);
-    setLogs(nextLogs);
+    appendLogs(nextLogs);
     if (activeTab === "system-dns") {
       await refreshSystemDns(forceSystemDns);
     }
@@ -129,12 +145,8 @@ export function App() {
     const statusTimer = window.setInterval(() => {
       refreshStatus().catch(() => undefined);
     }, STATUS_REFRESH_MS);
-    const logsTimer = window.setInterval(() => {
-      refreshLogs().catch(() => undefined);
-    }, LOGS_REFRESH_MS);
     return () => {
       window.clearInterval(statusTimer);
-      window.clearInterval(logsTimer);
     };
   }, [notifyError]);
 
@@ -151,8 +163,29 @@ export function App() {
     setPreferences(prefs);
     setStatus(nextStatus);
     setLogs(nextLogs);
+    lastLogId.current = nextLogs.reduce((max, entry) => Math.max(max, entry.id), 0);
     setSystemDns(nextSystemDns);
   }
+
+  useEffect(() => {
+    let unlistenStatus: (() => void) | undefined;
+    let unlistenLog: (() => void) | undefined;
+    listen<DesktopStatus>("desktop:status", (event) => {
+      setStatus(normalizeStatus(event.payload));
+    }).then((nextUnlisten) => {
+      unlistenStatus = nextUnlisten;
+    }).catch(() => undefined);
+    listen<LogEntry>("desktop:log-entry", (event) => {
+      appendLogs([event.payload]);
+    }).then((nextUnlisten) => {
+      unlistenLog = nextUnlisten;
+      loadLogs(lastLogId.current).then(appendLogs).catch(() => undefined);
+    }).catch(() => undefined);
+    return () => {
+      unlistenStatus?.();
+      unlistenLog?.();
+    };
+  }, [appendLogs]);
 
   useEffect(() => {
     if (activeTab === "system-dns" && !systemDns) {

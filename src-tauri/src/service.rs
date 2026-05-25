@@ -126,6 +126,14 @@ impl DesktopService {
         self.logs.entries()
     }
 
+    pub fn recent_logs_since(&self, since: u64) -> Vec<LogEntry> {
+        self.logs.entries_since(since)
+    }
+
+    pub fn set_log_listener(&self, listener: impl Fn(LogEntry) + Send + Sync + 'static) {
+        self.logs.set_listener(listener);
+    }
+
     pub fn clear_dns_cache(&self) -> usize {
         let inner = self.inner.lock();
         let Some(runtime) = inner.runtime.as_ref() else {

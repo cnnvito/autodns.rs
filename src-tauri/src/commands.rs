@@ -19,6 +19,7 @@ pub async fn start_autodns(
 ) -> Result<(), String> {
     let result = service.start(config_path).await;
     crate::refresh_tray_state(&app);
+    crate::emit_desktop_status(&app);
     result.map_err(to_command_error)
 }
 
@@ -29,6 +30,7 @@ pub async fn stop_autodns(
 ) -> Result<(), String> {
     let result = service.stop().await;
     crate::refresh_tray_state(&app);
+    crate::emit_desktop_status(&app);
     result.map_err(to_command_error)
 }
 
@@ -38,8 +40,11 @@ pub fn status(service: State<'_, DesktopService>) -> DesktopStatus {
 }
 
 #[tauri::command]
-pub fn recent_logs(service: State<'_, DesktopService>) -> Vec<LogEntry> {
-    service.recent_logs()
+pub fn recent_logs(service: State<'_, DesktopService>, since: Option<u64>) -> Vec<LogEntry> {
+    match since {
+        Some(id) => service.recent_logs_since(id),
+        None => service.recent_logs(),
+    }
 }
 
 #[tauri::command]
@@ -80,6 +85,7 @@ pub async fn apply_config(
 ) -> Result<ApplyConfigResult, String> {
     let result = service.apply_config(doc).await;
     crate::refresh_tray_state(&app);
+    crate::emit_desktop_status(&app);
     result.map_err(to_command_error)
 }
 

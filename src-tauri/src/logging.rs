@@ -4,6 +4,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::sync::Arc;
 
+type LogListener = Arc<dyn Fn(LogEntry) + Send + Sync>;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum LogLevel {
     Debug,
@@ -15,15 +17,18 @@ enum LogLevel {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LogEntry {
+    pub id: u64,
     pub time: String,
     pub level: String,
     pub message: String,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct LogBuffer {
     inner: Arc<Mutex<VecDeque<LogEntry>>>,
     min_level: Arc<Mutex<LogLevel>>,
+    next_id: Arc<Mutex<u64>>,
+    listener: Arc<Mutex<Option<LogListener>>>,
     capacity: usize,
 }
 
@@ -32,8 +37,14 @@ impl LogBuffer {
         Self {
             inner: Arc::new(Mutex::new(VecDeque::with_capacity(capacity))),
             min_level: Arc::new(Mutex::new(LogLevel::Info)),
+            next_id: Arc::new(Mutex::new(0)),
+            listener: Arc::new(Mutex::new(None)),
             capacity,
         }
+    }
+
+    pub fn set_listener(&self, listener: impl Fn(LogEntry) + Send + Sync + 'static) {
+        *self.listener.lock() = Some(Arc::new(listener));
     }
 
     pub fn set_level(&self, level: &str) {
@@ -45,19 +56,39 @@ impl LogBuffer {
         if LogLevel::from_str(&level) < *self.min_level.lock() {
             return;
         }
-        let mut entries = self.inner.lock();
-        if entries.len() >= self.capacity {
-            entries.pop_front();
+        let entry = {
+            let mut next_id = self.next_id.lock();
+            *next_id += 1;
+            LogEntry {
+                id: *next_id,
+                time: Utc::now().to_rfc3339(),
+                level,
+                message: message.into(),
+            }
+        };
+        {
+            let mut entries = self.inner.lock();
+            if entries.len() >= self.capacity {
+                entries.pop_front();
+            }
+            entries.push_back(entry.clone());
         }
-        entries.push_back(LogEntry {
-            time: Utc::now().to_rfc3339(),
-            level,
-            message: message.into(),
-        });
+        if let Some(listener) = self.listener.lock().as_ref().cloned() {
+            listener(entry);
+        }
     }
 
     pub fn entries(&self) -> Vec<LogEntry> {
         self.inner.lock().iter().cloned().collect()
+    }
+
+    pub fn entries_since(&self, since: u64) -> Vec<LogEntry> {
+        self.inner
+            .lock()
+            .iter()
+            .filter(|entry| entry.id > since)
+            .cloned()
+            .collect()
     }
 }
 
