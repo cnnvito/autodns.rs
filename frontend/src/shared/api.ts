@@ -7,7 +7,6 @@ import type {
   DesktopPreferences,
   DesktopStatus,
   DnsLookupResult,
-  LogEntry,
   ProxyConfig,
   SystemDnsSettings,
   SystemDnsStatus,
@@ -48,12 +47,12 @@ const emptySystemDnsStatus: SystemDnsStatus = {
   warnings: []
 };
 
-export async function startAutodns(configPath: string): Promise<void> {
-  await invoke("start_autodns", { configPath });
+export async function startAutodns(configPath: string): Promise<DesktopStatus> {
+  return normalizeStatus(await invoke<DesktopStatus>("start_autodns", { configPath }));
 }
 
-export async function stopAutodns(): Promise<void> {
-  await invoke("stop_autodns");
+export async function stopAutodns(): Promise<DesktopStatus> {
+  return normalizeStatus(await invoke<DesktopStatus>("stop_autodns"));
 }
 
 export async function loadStatus(): Promise<DesktopStatus> {
@@ -68,11 +67,6 @@ export function normalizeStatus(status: DesktopStatus): DesktopStatus {
     upstreamHealth: Array.isArray(status.upstreamHealth) ? status.upstreamHealth : [],
     proxyHealth: Array.isArray(status.proxyHealth) ? status.proxyHealth : []
   };
-}
-
-export async function loadLogs(since?: number): Promise<LogEntry[]> {
-  const logs = await invoke<LogEntry[]>("recent_logs", { since: since ?? null }).catch(() => []);
-  return Array.isArray(logs) ? logs : [];
 }
 
 export async function clearDnsCache(): Promise<number> {
@@ -102,7 +96,8 @@ export async function validateConfig(config: DesktopConfig): Promise<void> {
 export async function saveConfig(doc: ConfigDocument): Promise<ApplyConfigResult> {
   const result = await invoke<ApplyConfigResult>("apply_config", { doc });
   return {
-    action: result?.action ?? "saved"
+    action: result?.action ?? "saved",
+    status: normalizeStatus(result?.status ?? emptyStatus)
   };
 }
 
@@ -124,12 +119,12 @@ export async function saveSystemDnsSettings(settings: SystemDnsSettings): Promis
   return normalizeSystemDnsStatus(await invoke<SystemDnsStatus>("save_system_dns_settings", { settings }));
 }
 
-export async function applySystemDns(): Promise<void> {
-  await invoke("apply_system_dns");
+export async function applySystemDns(): Promise<SystemDnsStatus> {
+  return normalizeSystemDnsStatus(await invoke<SystemDnsStatus>("apply_system_dns"));
 }
 
-export async function restoreSystemDns(): Promise<void> {
-  await invoke("restore_system_dns");
+export async function restoreSystemDns(): Promise<SystemDnsStatus> {
+  return normalizeSystemDnsStatus(await invoke<SystemDnsStatus>("restore_system_dns"));
 }
 
 export async function hideWindow(): Promise<void> {

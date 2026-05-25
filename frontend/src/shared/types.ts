@@ -21,6 +21,7 @@ export type ApplyConfigAction = "saved" | "hotReloaded" | "restarted";
 
 export type ApplyConfigResult = {
   action: ApplyConfigAction;
+  status: DesktopStatus;
 };
 
 export type DnsLookupResult = {
@@ -143,14 +144,6 @@ export type ProxyHealth = {
   endpoint: string;
   health: HealthState;
   upstreams: string[];
-};
-
-export type LogEntry = {
-  id: number;
-  time: string;
-  level: string;
-  message: string;
-  attrs?: Record<string, unknown>;
 };
 
 export type CloseBehavior = "ask" | "hide" | "quit";

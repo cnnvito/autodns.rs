@@ -6,7 +6,7 @@ use crate::dns::{
     build_proxy_health, build_upstream_health, mark_proxies_unknown, mark_upstreams_unknown,
     start_runtime, HealthListener, RunningRuntime,
 };
-use crate::logging::{LogBuffer, LogEntry};
+use crate::logging::LogBuffer;
 use crate::store::ConfigStore;
 use crate::system_dns;
 use anyhow::{anyhow, Result};
@@ -130,18 +130,6 @@ impl DesktopService {
         inner.status.clone()
     }
 
-    pub fn recent_logs(&self) -> Vec<LogEntry> {
-        self.logs.entries()
-    }
-
-    pub fn recent_logs_since(&self, since: u64) -> Vec<LogEntry> {
-        self.logs.entries_since(since)
-    }
-
-    pub fn set_log_listener(&self, listener: impl Fn(LogEntry) + Send + Sync + 'static) {
-        self.logs.set_listener(listener);
-    }
-
     pub fn set_status_listener(&self, listener: impl Fn() + Send + Sync + 'static) {
         let listener: HealthListener = Arc::new(listener);
         *self.status_listener.lock() = Some(listener.clone());
@@ -192,16 +180,19 @@ impl DesktopService {
             if self.try_reload(core.clone()).await? {
                 return Ok(ApplyConfigResult {
                     action: ApplyConfigAction::HotReloaded,
+                    status: self.status(),
                 });
             }
             self.stop().await?;
             self.start(String::new()).await?;
             return Ok(ApplyConfigResult {
                 action: ApplyConfigAction::Restarted,
+                status: self.status(),
             });
         }
         Ok(ApplyConfigResult {
             action: ApplyConfigAction::Saved,
+            status: self.status(),
         })
     }
 
@@ -226,12 +217,50 @@ impl DesktopService {
         system_dns::status_from_adapters(&store, &listen, adapters, last_error)
     }
 
-    pub fn apply_system_dns(&self) -> Result<()> {
-        system_dns::apply(&self.store()?)
+    pub fn apply_system_dns(&self) -> Result<SystemDnsStatus> {
+        let store = self.store()?;
+        let listen = store
+            .runtime_config()
+            .map(|cfg| cfg.server.listen)
+            .unwrap_or_default();
+        let cache = self.system_dns_adapters.lock();
+        if cache.adapters.is_empty() {
+            return Err(anyhow!(
+                "network adapters have not been loaded yet; refresh system DNS adapters first"
+            ));
+        }
+        let mut adapters = cache.adapters.clone();
+        drop(cache);
+
+        system_dns::apply(&store, &mut adapters)?;
+
+        let mut cache = self.system_dns_adapters.lock();
+        cache.adapters = adapters.clone();
+        cache.last_error = None;
+        system_dns::status_from_adapters(&store, &listen, adapters, None)
     }
 
-    pub fn restore_system_dns(&self) -> Result<()> {
-        system_dns::restore(&self.store()?)
+    pub fn restore_system_dns(&self) -> Result<SystemDnsStatus> {
+        let store = self.store()?;
+        let listen = store
+            .runtime_config()
+            .map(|cfg| cfg.server.listen)
+            .unwrap_or_default();
+        let cache = self.system_dns_adapters.lock();
+        if cache.adapters.is_empty() {
+            return Err(anyhow!(
+                "network adapters have not been loaded yet; refresh system DNS adapters first"
+            ));
+        }
+        let mut adapters = cache.adapters.clone();
+        drop(cache);
+
+        system_dns::restore(&store, &mut adapters)?;
+
+        let mut cache = self.system_dns_adapters.lock();
+        cache.adapters = adapters.clone();
+        cache.last_error = None;
+        system_dns::status_from_adapters(&store, &listen, adapters, None)
     }
 
     pub fn record_error(&self, stage: &str, err: &str) {

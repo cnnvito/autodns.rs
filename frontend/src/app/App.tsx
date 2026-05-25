@@ -7,7 +7,6 @@ import {
   applySystemDns,
   clearDnsCache,
   hideWindow,
-  loadLogs,
   loadManagedConfig,
   loadPreferences,
   loadStatus,
@@ -24,8 +23,7 @@ import {
 } from "../shared/api";
 import { errorMessage, formatDate } from "../shared/format";
 import { NotificationCenter, type AppNotification, type NotificationKind } from "../shared/notifications";
-import type { ConfigDocument, DesktopPreferences, DesktopStatus, LogEntry, SystemDnsSettings, SystemDnsStatus } from "../shared/types";
-import { LogsPage } from "../pages/LogsPage";
+import type { ConfigDocument, DesktopPreferences, DesktopStatus, SystemDnsSettings, SystemDnsStatus } from "../shared/types";
 import { LookupPage } from "../pages/LookupPage";
 import { OverviewPage } from "../pages/OverviewPage";
 import { RulesPage } from "../pages/RulesPage";
@@ -67,13 +65,8 @@ function needsRuntimeRestart(current: ConfigDocument | null, saved: ConfigDocume
     || currentServer.path !== savedServer.path;
 }
 
-function sameConfig(current: ConfigDocument, saved: ConfigDocument | null): boolean {
-  return saved ? JSON.stringify(current.config) === JSON.stringify(saved.config) : false;
-}
-
 export function App() {
   const [status, setStatus] = useState<DesktopStatus | null>(null);
-  const [logs, setLogs] = useState<LogEntry[]>([]);
   const [configDoc, setConfigDoc] = useState<ConfigDocument | null>(null);
   const [savedConfigDoc, setSavedConfigDoc] = useState<ConfigDocument | null>(null);
   const [dirty, setDirty] = useState(false);
@@ -88,7 +81,6 @@ export function App() {
   const lastRuntimeError = useRef("");
   const pendingSystemDnsSave = useRef(0);
   const lastSystemDnsSaveId = useRef(0);
-  const lastLogId = useRef(0);
 
   const dismissNotification = useCallback((id: number) => {
     setNotifications((items) => items.filter((item) => item.id !== id));
@@ -104,25 +96,6 @@ export function App() {
     notify("error", title, errorMessage(err));
   }, [notify]);
 
-  const appendLogs = useCallback((items: LogEntry[]) => {
-    if (!items.length) {
-      return;
-    }
-    setLogs((current) => {
-      const seen = new Set(current.map((entry) => entry.id));
-      const next = [...current];
-      for (const item of items) {
-        if (seen.has(item.id)) {
-          continue;
-        }
-        seen.add(item.id);
-        next.push(item);
-        lastLogId.current = Math.max(lastLogId.current, item.id);
-      }
-      return next.slice(-1000);
-    });
-  }, []);
-
   async function refreshSystemDns(force = false) {
     const nextSystemDns = await loadSystemDnsStatus(force);
     if (pendingSystemDnsSave.current === 0) {
@@ -131,9 +104,8 @@ export function App() {
   }
 
   async function refresh(forceSystemDns = false) {
-    const [nextStatus, nextLogs] = await Promise.all([loadStatus(), loadLogs(lastLogId.current)]);
+    const nextStatus = await loadStatus();
     setStatus(nextStatus);
-    appendLogs(nextLogs);
     if (activeTab === "system-dns") {
       await refreshSystemDns(forceSystemDns);
     }
@@ -144,42 +116,32 @@ export function App() {
   }, [notifyError]);
 
   async function bootstrap() {
-    const [doc, prefs, nextStatus, nextLogs, nextSystemDns] = await Promise.all([
+    const [doc, prefs, nextStatus, nextSystemDns] = await Promise.all([
       loadManagedConfig(),
       loadPreferences(),
       loadStatus(),
-      loadLogs(),
-      loadSystemDnsStatus(true)
+      loadSystemDnsStatus(false)
     ]);
     setConfigDoc(doc);
     setSavedConfigDoc(doc);
     setDirty(false);
     setPreferences(prefs);
     setStatus(nextStatus);
-    setLogs(nextLogs);
-    lastLogId.current = nextLogs.reduce((max, entry) => Math.max(max, entry.id), 0);
     setSystemDns(nextSystemDns);
+    refreshSystemDns(true).catch((err: unknown) => notifyError("系统 DNS 状态读取失败", err));
   }
 
   useEffect(() => {
     let unlistenStatus: (() => void) | undefined;
-    let unlistenLog: (() => void) | undefined;
     listen<DesktopStatus>("desktop:status", (event) => {
       setStatus(normalizeStatus(event.payload));
     }).then((nextUnlisten) => {
       unlistenStatus = nextUnlisten;
     }).catch(() => undefined);
-    listen<LogEntry>("desktop:log-entry", (event) => {
-      appendLogs([event.payload]);
-    }).then((nextUnlisten) => {
-      unlistenLog = nextUnlisten;
-      loadLogs(lastLogId.current).then(appendLogs).catch(() => undefined);
-    }).catch(() => undefined);
     return () => {
       unlistenStatus?.();
-      unlistenLog?.();
     };
-  }, [appendLogs]);
+  }, []);
 
   useEffect(() => {
     if (activeTab === "system-dns" && !systemDns) {
@@ -215,15 +177,15 @@ export function App() {
 
   const handleConfigDocChange = useCallback((doc: ConfigDocument) => {
     setConfigDoc(doc);
-    setDirty(!sameConfig(doc, savedConfigDoc));
-  }, [savedConfigDoc]);
+    setDirty(true);
+  }, []);
 
   async function handleStart() {
     setBusy(true);
     try {
-      await startAutodns("");
-      await refresh();
-      notify("success", "服务已启动", status?.listen || "本地 DNS 已开始监听");
+      const nextStatus = await startAutodns("");
+      setStatus(nextStatus);
+      notify("success", "服务已启动", nextStatus.listen || "本地 DNS 已开始监听");
     } catch (err) {
       notifyError("启动失败", err);
     } finally {
@@ -255,7 +217,7 @@ export function App() {
       const result = await saveConfig(configDoc);
       setSavedConfigDoc(configDoc);
       setDirty(false);
-      await refresh();
+      setStatus(result.status);
       if (result.action === "restarted") {
         notify("success", "配置已保存并重启", "监听入口发生变化，服务已自动重启。");
       } else if (result.action === "hotReloaded") {
@@ -273,8 +235,8 @@ export function App() {
   async function handleStop() {
     setBusy(true);
     try {
-      await stopAutodns();
-      await refresh();
+      const nextStatus = await stopAutodns();
+      setStatus(nextStatus);
       notify("info", "服务已停止");
     } catch (err) {
       notifyError("停止失败", err);
@@ -290,8 +252,8 @@ export function App() {
     setBusy(true);
     try {
       await stopAutodns();
-      await startAutodns("");
-      await refresh();
+      const nextStatus = await startAutodns("");
+      setStatus(nextStatus);
       notify("success", "服务已重启", "本地 DNS 已重新开始监听。");
     } catch (err) {
       notifyError("重启失败", err);
@@ -346,8 +308,7 @@ export function App() {
   async function handleApplySystemDns() {
     setBusy(true);
     try {
-      await applySystemDns();
-      setSystemDns(await loadSystemDnsStatus(false));
+      setSystemDns(await applySystemDns());
       notify("success", "系统 DNS 已接管");
     } catch (err) {
       notifyError("系统 DNS 接管失败", err);
@@ -359,8 +320,7 @@ export function App() {
   async function handleRestoreSystemDns() {
     setBusy(true);
     try {
-      await restoreSystemDns();
-      setSystemDns(await loadSystemDnsStatus(false));
+      setSystemDns(await restoreSystemDns());
       notify("success", "系统 DNS 已恢复");
     } catch (err) {
       notifyError("系统 DNS 恢复失败", err);
@@ -447,7 +407,6 @@ export function App() {
             <Tabs.Trigger className="mainTabsTrigger" value="upstreams">上游</Tabs.Trigger>
             <Tabs.Trigger className="mainTabsTrigger" value="lookup">查询</Tabs.Trigger>
             <Tabs.Trigger className="mainTabsTrigger" value="system-dns">系统 DNS</Tabs.Trigger>
-            <Tabs.Trigger className="mainTabsTrigger" value="logs">日志</Tabs.Trigger>
             <Tabs.Trigger className="mainTabsTrigger" value="settings">设置</Tabs.Trigger>
           </Tabs.List>
 
@@ -506,10 +465,6 @@ export function App() {
               onApplySystemDns={handleApplySystemDns}
               onRestoreSystemDns={handleRestoreSystemDns}
             />
-          </Tabs.Content>
-
-          <Tabs.Content className="mainTabsContent" value="logs">
-            <LogsPage logs={logs} />
           </Tabs.Content>
 
           <Tabs.Content className="mainTabsContent" value="settings">

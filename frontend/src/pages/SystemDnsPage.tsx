@@ -26,6 +26,7 @@ export function SystemDnsPage({
   const selectedAdapters = (systemDns?.adapters ?? []).filter((adapter) => selectedAdapterIds.has(adapter.id));
   const managedAdapters = (systemDns?.adapters ?? []).filter((adapter) => adapter.managed);
   const confirmAdapters = dnsConfirm === "restore" ? managedAdapters.length ? managedAdapters : selectedAdapters : selectedAdapters;
+  const adaptersLoaded = Boolean(systemDns && systemDns.adapters.length > 0);
 
   function updateSystemDns(patch: Partial<SystemDnsSettings>) {
     const current = systemDns?.settings ?? { enabled: false, targetServers: systemDns?.localServers ?? [], selectedAdapterIds: [] };
@@ -128,14 +129,14 @@ export function SystemDnsPage({
               </div>
               );
             })}
-            {systemDns && systemDns.adapters.length === 0 ? <div className="emptyList">没有读取到网络接口。</div> : null}
+            {systemDns && systemDns.adapters.length === 0 ? <div className="emptyList">正在读取网络接口；也可以点击右上角刷新。</div> : null}
             {!systemDns ? <div className="emptyList">正在读取网络接口。</div> : null}
           </div>
           <div className="dnsActions">
-            <button onClick={() => setDnsConfirm("restore")} disabled={!systemDns?.supported || (!managedAdapters.length && !selectedAdapters.length)}>
+            <button onClick={() => setDnsConfirm("restore")} disabled={!adaptersLoaded || !systemDns?.supported || (!managedAdapters.length && !selectedAdapters.length)}>
               恢复原 DNS
             </button>
-            <button className="primary" onClick={() => setDnsConfirm("apply")} disabled={!canManageSystemDns || !systemDnsEnabled || !systemDns?.settings.selectedAdapterIds.length}>
+            <button className="primary" onClick={() => setDnsConfirm("apply")} disabled={!adaptersLoaded || !canManageSystemDns || !systemDnsEnabled || !systemDns?.settings.selectedAdapterIds.length}>
               接管选中接口
             </button>
           </div>
@@ -174,7 +175,7 @@ export function SystemDnsPage({
             </div>
             <div className="confirmActions">
               <button onClick={() => setDnsConfirm(null)}>取消</button>
-              <button className="primary" onClick={confirmSystemDnsAction} disabled={!confirmAdapters.length || (dnsConfirm === "apply" && !running)}>
+              <button className="primary" onClick={confirmSystemDnsAction} disabled={!adaptersLoaded || !confirmAdapters.length || (dnsConfirm === "apply" && !running)}>
                 确认执行
               </button>
             </div>

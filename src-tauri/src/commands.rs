@@ -2,7 +2,6 @@ use crate::desktop::{
     ApplyConfigResult, ConfigDocument, DesktopConfig, DesktopPreferences, DesktopStatus,
     DnsLookupResult, SystemDnsSettings, SystemDnsStatus,
 };
-use crate::logging::LogEntry;
 use crate::preferences;
 use crate::service::DesktopService;
 use tauri::{AppHandle, Manager, State};
@@ -16,35 +15,27 @@ pub async fn start_autodns(
     app: AppHandle,
     service: State<'_, DesktopService>,
     config_path: String,
-) -> Result<(), String> {
+) -> Result<DesktopStatus, String> {
     let result = service.start(config_path).await;
     crate::refresh_tray_state(&app);
     crate::emit_desktop_status(&app);
-    result.map_err(to_command_error)
+    result.map(|()| service.status()).map_err(to_command_error)
 }
 
 #[tauri::command]
 pub async fn stop_autodns(
     app: AppHandle,
     service: State<'_, DesktopService>,
-) -> Result<(), String> {
+) -> Result<DesktopStatus, String> {
     let result = service.stop().await;
     crate::refresh_tray_state(&app);
     crate::emit_desktop_status(&app);
-    result.map_err(to_command_error)
+    result.map(|()| service.status()).map_err(to_command_error)
 }
 
 #[tauri::command]
 pub fn status(service: State<'_, DesktopService>) -> DesktopStatus {
     service.status()
-}
-
-#[tauri::command]
-pub fn recent_logs(service: State<'_, DesktopService>, since: Option<u64>) -> Vec<LogEntry> {
-    match since {
-        Some(id) => service.recent_logs_since(id),
-        None => service.recent_logs(),
-    }
 }
 
 #[tauri::command]
@@ -128,7 +119,7 @@ pub async fn save_system_dns_settings(
 }
 
 #[tauri::command]
-pub async fn apply_system_dns(app: AppHandle) -> Result<(), String> {
+pub async fn apply_system_dns(app: AppHandle) -> Result<SystemDnsStatus, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let service = app.state::<DesktopService>();
         service.apply_system_dns()
@@ -139,7 +130,7 @@ pub async fn apply_system_dns(app: AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub async fn restore_system_dns(app: AppHandle) -> Result<(), String> {
+pub async fn restore_system_dns(app: AppHandle) -> Result<SystemDnsStatus, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let service = app.state::<DesktopService>();
         service.restore_system_dns()

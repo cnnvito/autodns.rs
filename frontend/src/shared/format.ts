@@ -7,13 +7,6 @@ const healthStateLabels: Record<HealthState, string> = {
   unknown: "未知"
 };
 
-const levelLabels: Record<string, string> = {
-  debug: "调试",
-  info: "信息",
-  warn: "警告",
-  error: "错误"
-};
-
 export function formatDate(value?: string): string {
   if (!value) {
     return "";
@@ -34,8 +27,4 @@ export function errorMessage(err: unknown): string {
 
 export function healthStateLabel(state: HealthState): string {
   return healthStateLabels[state] || healthStateLabels.unknown;
-}
-
-export function logLevelLabel(level: string): string {
-  return levelLabels[level.toLowerCase()] || level;
 }

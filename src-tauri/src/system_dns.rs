@@ -5,6 +5,7 @@ use anyhow::{anyhow, Context, Result};
 use serde::Deserialize;
 use std::collections::HashSet;
 use std::net::SocketAddr;
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 use std::process::Command;
 #[cfg(target_os = "windows")]
 use std::process::Output;
@@ -78,7 +79,7 @@ pub fn save_settings(store: &ConfigStore, mut settings: SystemDnsSettings) -> Re
     store.save_system_dns_settings(settings)
 }
 
-pub fn apply(store: &ConfigStore) -> Result<()> {
+pub fn apply(store: &ConfigStore, adapters: &mut [SystemDnsAdapter]) -> Result<()> {
     let settings = store.load_system_dns_settings()?;
     if !settings.enabled {
         return Err(anyhow!("system DNS takeover is disabled"));
@@ -90,9 +91,8 @@ pub fn apply(store: &ConfigStore) -> Result<()> {
         return Err(anyhow!("target DNS server is empty"));
     }
 
-    let adapters = list_adapters()?;
     for adapter_id in settings.selected_adapter_ids {
-        let Some(adapter) = adapters.iter().find(|item| item.id == adapter_id) else {
+        let Some(adapter) = adapters.iter_mut().find(|item| item.id == adapter_id) else {
             store.mark_system_dns_error(&adapter_id, "selected adapter no longer exists")?;
             continue;
         };
@@ -101,13 +101,18 @@ pub fn apply(store: &ConfigStore) -> Result<()> {
             return Err(err).with_context(|| format!("apply system DNS: {}", adapter.name));
         }
         store.mark_system_dns_applied(&adapter_id, &adapter.dns_servers)?;
+        adapter
+            .original_dns
+            .get_or_insert_with(|| adapter.dns_servers.clone());
+        adapter.dns_servers = settings.target_servers.clone();
+        adapter.managed = true;
+        adapter.last_error = None;
     }
     Ok(())
 }
 
-pub fn restore(store: &ConfigStore) -> Result<()> {
+pub fn restore(store: &ConfigStore, adapters: &mut [SystemDnsAdapter]) -> Result<()> {
     let settings = store.load_system_dns_settings()?;
-    let adapters = list_adapters()?;
     let mut adapter_ids = settings.selected_adapter_ids;
     adapter_ids.extend(
         adapters
@@ -126,7 +131,7 @@ pub fn restore(store: &ConfigStore) -> Result<()> {
         if !state.managed && state.original_dns.is_empty() {
             continue;
         }
-        let Some(adapter) = adapters.iter().find(|item| item.id == adapter_id) else {
+        let Some(adapter) = adapters.iter_mut().find(|item| item.id == adapter_id) else {
             store.mark_system_dns_error(&adapter_id, "managed adapter no longer exists")?;
             continue;
         };
@@ -135,6 +140,10 @@ pub fn restore(store: &ConfigStore) -> Result<()> {
             return Err(err).with_context(|| format!("restore system DNS: {}", adapter.name));
         }
         store.mark_system_dns_restored(&adapter_id)?;
+        adapter.dns_servers = state.original_dns;
+        adapter.original_dns = None;
+        adapter.managed = false;
+        adapter.last_error = None;
     }
     Ok(())
 }
@@ -170,6 +179,10 @@ fn list_adapters() -> Result<Vec<SystemDnsAdapter>> {
     Ok(Vec::new())
 }
 
+#[cfg_attr(
+    not(any(target_os = "windows", target_os = "macos")),
+    allow(unused_variables)
+)]
 fn apply_adapter(adapter: &SystemDnsAdapter, servers: &[String]) -> Result<()> {
     #[cfg(target_os = "windows")]
     {
@@ -187,6 +200,10 @@ fn apply_adapter(adapter: &SystemDnsAdapter, servers: &[String]) -> Result<()> {
     ))
 }
 
+#[cfg_attr(
+    not(any(target_os = "windows", target_os = "macos")),
+    allow(unused_variables)
+)]
 fn restore_adapter(adapter: &SystemDnsAdapter, original_dns: &[String]) -> Result<()> {
     #[cfg(target_os = "windows")]
     {
@@ -204,6 +221,7 @@ fn restore_adapter(adapter: &SystemDnsAdapter, original_dns: &[String]) -> Resul
     ))
 }
 
+#[cfg(any(test, target_os = "windows", target_os = "macos"))]
 fn virtual_adapter(name: &str, description: &str) -> bool {
     let text = format!("{name} {description}").to_ascii_lowercase();
     [

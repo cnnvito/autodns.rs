@@ -115,6 +115,7 @@ pub struct ConfigDocument {
 #[serde(rename_all = "camelCase")]
 pub struct ApplyConfigResult {
     pub action: ApplyConfigAction,
+    pub status: DesktopStatus,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

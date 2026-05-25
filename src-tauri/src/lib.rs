@@ -44,11 +44,6 @@ pub fn run() {
         .manage(DesktopService::new())
         .setup(|app| {
             let app_handle = app.handle().clone();
-            app.state::<DesktopService>()
-                .set_log_listener(move |entry| {
-                    let _ = app_handle.emit("desktop:log-entry", entry);
-                });
-            let app_handle = app.handle().clone();
             let pending_status_emit = Arc::new(AtomicBool::new(false));
             app.state::<DesktopService>().set_status_listener({
                 let pending_status_emit = pending_status_emit.clone();
@@ -88,7 +83,6 @@ pub fn run() {
             start_autodns,
             stop_autodns,
             status,
-            recent_logs,
             clear_dns_cache,
             lookup_domain,
             managed_config,

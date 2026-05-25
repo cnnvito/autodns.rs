@@ -5,6 +5,14 @@ use anyhow::{anyhow, Context, Result};
 use arc_swap::ArcSwap;
 use base64::Engine;
 use chrono::Utc;
+use hickory_proto::op::{
+    Message as DnsMessage, MessageType as DnsMessageType, OpCode as DnsOpCode, Query as DnsQuery,
+    ResponseCode as DnsResponseCode,
+};
+use hickory_proto::rr::rdata::{A as DnsA, AAAA as DnsAaaa};
+use hickory_proto::rr::{
+    Name as DnsName, RData as DnsRData, Record as DnsRecord, RecordType as DnsRecordType,
+};
 use moka::sync::Cache;
 use parking_lot::Mutex;
 use reqwest::header::{ACCEPT, CONTENT_TYPE};
@@ -33,6 +41,7 @@ const TYPE_MX: u16 = 15;
 const TYPE_TXT: u16 = 16;
 const TYPE_AAAA: u16 = 28;
 const TYPE_HTTPS: u16 = 65;
+#[cfg(test)]
 const CLASS_IN: u16 = 1;
 const RCODE_SUCCESS: u8 = 0;
 const RCODE_NAME_ERROR: u8 = 3;
@@ -323,7 +332,10 @@ struct Question {
     normalized_qname: String,
     qtype: u16,
     qclass: u16,
-    question_end: usize,
+    query: DnsQuery,
+    op_code: DnsOpCode,
+    recursion_desired: bool,
+    checking_disabled: bool,
 }
 
 pub async fn start_runtime(cfg: CoreConfig, logs: LogBuffer) -> Result<RunningRuntime> {
@@ -1028,19 +1040,50 @@ impl Resolver {
     }
 
     async fn resolve(&self, req: Vec<u8>) -> std::result::Result<Vec<u8>, Vec<u8>> {
-        let Ok(question) = parse_question(&req) else {
-            return Err(req);
+        let debug_logs = self.logs.debug_enabled();
+        let question = match parse_question(&req) {
+            Ok(question) => question,
+            Err(err) => {
+                if debug_logs {
+                    self.logs
+                        .push("debug", format!("dns query parse failed: {err}"));
+                }
+                return Err(req);
+            }
         };
+        let qname = question.normalized_qname.as_str();
+        let qtype = qtype_label(question.qtype);
         if question.qtype == TYPE_AAAA && !self.ipv6_enabled {
-            return Ok(empty_success_response(&req));
+            if debug_logs {
+                self.logs.push(
+                    "debug",
+                    format!("dns query {qname} {qtype} answered locally because IPv6 is disabled"),
+                );
+            }
+            return Ok(empty_success_response(&question));
         }
-        if let Some(resp) = self.resolve_hosts(&req, &question) {
+        if let Some(resp) = self.resolve_hosts(&question) {
+            if debug_logs {
+                self.logs.push(
+                    "debug",
+                    format!("dns query {qname} {qtype} answered from hosts"),
+                );
+            }
             return Ok(resp);
         }
 
         let (route_id, selected) = self
             .routes
             .select(&question.normalized_qname, &self.default_upstreams);
+        if debug_logs {
+            self.logs.push(
+                "debug",
+                format!(
+                    "dns query {qname} {qtype} selected route {route_id} upstreams {}",
+                    selected.join(",")
+                ),
+            );
+        }
         let key = CacheKey {
             qname: question.normalized_qname.clone(),
             qtype: question.qtype,
@@ -1048,60 +1091,192 @@ impl Resolver {
             route_id,
         };
         if let Some(resp) = self.cache.get(&key, question.id) {
+            if debug_logs {
+                self.logs.push(
+                    "debug",
+                    format!("dns query {qname} {qtype} route {route_id} answered from cache"),
+                );
+            }
             return Ok(resp);
         }
 
         let mut last_negative = None;
         for name in selected.iter() {
             let Some(client) = self.clients.get(name) else {
+                if debug_logs {
+                    self.logs.push(
+                        "debug",
+                        format!("dns query {qname} {qtype} route {route_id} skipped missing upstream {name}"),
+                    );
+                }
                 continue;
             };
             let started = Instant::now();
-            match client.exchange(req.clone(), self.timeout).await {
+            if debug_logs {
+                self.logs.push(
+                    "debug",
+                    format!(
+                        "dns query {qname} {qtype} route {route_id} via upstream {} ({}://{})",
+                        client.name, client.endpoint.scheme, client.endpoint.address
+                    ),
+                );
+            }
+            match client.exchange(&req, self.timeout).await {
                 Ok(resp) => {
                     let resp = self.filter_response(resp);
                     match classify(&resp) {
                         ResponseClass::Answer => {
                             self.health.record_query_success(name, started.elapsed());
                             self.cache.set(key.clone(), &resp, false);
+                            if debug_logs {
+                                let duration_ms = started.elapsed().as_millis();
+                                let rcode_label = response_code_label(rcode(&resp));
+                                let answers = answer_count(&resp).unwrap_or(0);
+                                self.logs.push(
+                                    "debug",
+                                    format!(
+                                        "dns query {qname} {qtype} upstream {} answered in {duration_ms}ms rcode {rcode_label} answers {answers}",
+                                        client.name
+                                    ),
+                                );
+                            }
                             return Ok(resp);
                         }
                         ResponseClass::Negative => {
                             self.health
                                 .record_failure(name, "upstream returned no answer");
+                            if debug_logs {
+                                let duration_ms = started.elapsed().as_millis();
+                                let rcode_label = response_code_label(rcode(&resp));
+                                self.logs.push(
+                                    "debug",
+                                    format!(
+                                        "dns query {qname} {qtype} upstream {} returned no answer in {duration_ms}ms rcode {rcode_label}",
+                                        client.name
+                                    ),
+                                );
+                            }
                             last_negative = Some(resp);
                         }
                         ResponseClass::Retry => {
                             self.health
                                 .record_failure(name, "upstream returned retryable response");
+                            if debug_logs {
+                                let duration_ms = started.elapsed().as_millis();
+                                let rcode_label = response_code_label(rcode(&resp));
+                                self.logs.push(
+                                    "debug",
+                                    format!(
+                                        "dns query {qname} {qtype} upstream {} returned retryable response in {duration_ms}ms rcode {rcode_label}",
+                                        client.name
+                                    ),
+                                );
+                            }
                         }
                     }
                 }
                 Err(err) => {
-                    self.logs
-                        .push("debug", format!("upstream {name} exchange failed: {err}"));
+                    if debug_logs {
+                        let duration_ms = started.elapsed().as_millis();
+                        self.logs.push(
+                            "debug",
+                            format!(
+                                "dns query {qname} {qtype} upstream {} failed in {duration_ms}ms: {err}",
+                                client.name
+                            ),
+                        );
+                    }
                     self.health.record_failure(name, err.to_string());
                 }
             }
         }
 
         if let Some(client) = &self.fallback {
-            if let Ok(resp) = client.exchange(req.clone(), self.timeout).await {
-                let resp = self.filter_response(resp);
-                match classify(&resp) {
-                    ResponseClass::Answer => {
-                        self.cache.set(key.clone(), &resp, false);
-                        return Ok(resp);
+            let started = Instant::now();
+            if debug_logs {
+                self.logs.push(
+                    "debug",
+                    format!(
+                        "dns query {qname} {qtype} route {route_id} via fallback {}://{}",
+                        client.endpoint.scheme, client.endpoint.address
+                    ),
+                );
+            }
+            match client.exchange(&req, self.timeout).await {
+                Ok(resp) => {
+                    let resp = self.filter_response(resp);
+                    match classify(&resp) {
+                        ResponseClass::Answer => {
+                            self.cache.set(key.clone(), &resp, false);
+                            if debug_logs {
+                                let duration_ms = started.elapsed().as_millis();
+                                let rcode_label = response_code_label(rcode(&resp));
+                                let answers = answer_count(&resp).unwrap_or(0);
+                                self.logs.push(
+                                    "debug",
+                                    format!(
+                                        "dns query {qname} {qtype} fallback answered in {duration_ms}ms rcode {rcode_label} answers {answers}"
+                                    ),
+                                );
+                            }
+                            return Ok(resp);
+                        }
+                        ResponseClass::Negative => {
+                            if debug_logs {
+                                let duration_ms = started.elapsed().as_millis();
+                                let rcode_label = response_code_label(rcode(&resp));
+                                self.logs.push(
+                                    "debug",
+                                    format!(
+                                        "dns query {qname} {qtype} fallback returned no answer in {duration_ms}ms rcode {rcode_label}"
+                                    ),
+                                );
+                            }
+                            last_negative = Some(resp);
+                        }
+                        ResponseClass::Retry => {
+                            if debug_logs {
+                                let duration_ms = started.elapsed().as_millis();
+                                let rcode_label = response_code_label(rcode(&resp));
+                                self.logs.push(
+                                    "debug",
+                                    format!(
+                                        "dns query {qname} {qtype} fallback returned retryable response in {duration_ms}ms rcode {rcode_label}"
+                                    ),
+                                );
+                            }
+                        }
                     }
-                    ResponseClass::Negative => last_negative = Some(resp),
-                    ResponseClass::Retry => {}
+                }
+                Err(err) => {
+                    if debug_logs {
+                        let duration_ms = started.elapsed().as_millis();
+                        self.logs.push(
+                            "debug",
+                            format!(
+                                "dns query {qname} {qtype} fallback failed in {duration_ms}ms: {err}"
+                            ),
+                        );
+                    }
                 }
             }
         }
 
         if let Some(resp) = last_negative {
             self.cache.set(key, &resp, true);
+            if debug_logs {
+                self.logs.push(
+                    "debug",
+                    format!("dns query {qname} {qtype} returning last negative response"),
+                );
+            }
             return Ok(resp);
+        }
+        if debug_logs {
+            self.logs.push(
+                "debug",
+                format!("dns query {qname} {qtype} returning SERVFAIL"),
+            );
         }
         Ok(servfail_response(&req))
     }
@@ -1113,35 +1288,31 @@ impl Resolver {
         strip_aaaa_records(&resp).unwrap_or(resp)
     }
 
-    fn resolve_hosts(&self, req: &[u8], question: &Question) -> Option<Vec<u8>> {
+    fn resolve_hosts(&self, question: &Question) -> Option<Vec<u8>> {
         let entry = self.hosts.entries.get(&question.normalized_qname)?;
         match question.qtype {
-            TYPE_A if !entry.ipv4.is_empty() => {
-                Some(hosts_response(req, question, &entry.ipv4, &[]))
-            }
-            TYPE_AAAA if !entry.ipv6.is_empty() => {
-                Some(hosts_response(req, question, &[], &entry.ipv6))
-            }
+            TYPE_A if !entry.ipv4.is_empty() => Some(hosts_response(question, &entry.ipv4, &[])),
+            TYPE_AAAA if !entry.ipv6.is_empty() => Some(hosts_response(question, &[], &entry.ipv6)),
             _ => None,
         }
     }
 }
 
 impl UpstreamClient {
-    async fn exchange(&self, req: Vec<u8>, timeout: Option<Duration>) -> Result<Vec<u8>> {
+    async fn exchange(&self, req: &[u8], timeout: Option<Duration>) -> Result<Vec<u8>> {
         let fut = async {
             match self.endpoint.scheme.as_str() {
                 "udp" => {
                     if self.proxy.is_some() {
-                        self.exchange_socks5_udp(&req).await
+                        self.exchange_socks5_udp(req).await
                     } else {
-                        self.exchange_udp(&req).await
+                        self.exchange_udp(req).await
                     }
                 }
-                "tcp" => self.exchange_tcp(&req).await,
-                "dot" => self.exchange_dot(&req).await,
-                "doq" | "quic" => self.exchange_doq(&req).await,
-                "http" | "https" => exchange_doh(&self.endpoint, self.http.as_ref(), &req).await,
+                "tcp" => self.exchange_tcp(req).await,
+                "dot" => self.exchange_dot(req).await,
+                "doq" | "quic" => self.exchange_doq(req).await,
+                "http" | "https" => exchange_doh(&self.endpoint, self.http.as_ref(), req).await,
                 _ => Err(anyhow!(
                     "unsupported upstream protocol {}",
                     self.endpoint.scheme
@@ -1914,7 +2085,7 @@ async fn run_health_loop(
         let qtype = if domain == "." { 2 } else { TYPE_A };
         let req = build_query(&domain, qtype);
         let started = Instant::now();
-        match client.exchange(req, Some(timeout)).await {
+        match client.exchange(&req, Some(timeout)).await {
             Ok(resp) if !matches!(rcode(&resp), Some(RCODE_SERVER_FAILURE | RCODE_REFUSED)) => {
                 health.record_probe_success(&client.name, started.elapsed())
             }
@@ -2505,72 +2676,46 @@ pub fn mark_proxies_unknown(items: &[ProxyHealth]) -> Vec<ProxyHealth> {
 }
 
 fn parse_question(req: &[u8]) -> Result<Question> {
-    if req.len() < 12 {
-        return Err(anyhow!("dns message is too short"));
-    }
-    let qdcount = u16::from_be_bytes([req[4], req[5]]);
-    if qdcount != 1 {
+    let message = DnsMessage::from_vec(req).context("decode dns query")?;
+    if message.queries.len() != 1 {
         return Err(anyhow!("resolver only supports single-question requests"));
     }
-    let mut offset = 12;
-    let mut labels = Vec::new();
-    loop {
-        if offset >= req.len() {
-            return Err(anyhow!("invalid question name"));
-        }
-        let len = req[offset] as usize;
-        offset += 1;
-        if len == 0 {
-            break;
-        }
-        if len & 0b1100_0000 != 0 {
-            return Err(anyhow!("compressed question names are not supported"));
-        }
-        if offset + len > req.len() {
-            return Err(anyhow!("invalid question name"));
-        }
-        labels.push(String::from_utf8_lossy(&req[offset..offset + len]).to_string());
-        offset += len;
-    }
-    if offset + 4 > req.len() {
-        return Err(anyhow!("invalid question"));
-    }
-    let qtype = u16::from_be_bytes([req[offset], req[offset + 1]]);
-    let qclass = u16::from_be_bytes([req[offset + 2], req[offset + 3]]);
-    let normalized_qname = normalize_domain_lossy(&labels.join("."));
+    let query = &message.queries[0];
+    let normalized_qname = normalize_domain_lossy(&query.name().to_ascii());
     Ok(Question {
-        id: u16::from_be_bytes([req[0], req[1]]),
+        id: message.metadata.id,
         normalized_qname,
-        qtype,
-        qclass,
-        question_end: offset + 4,
+        qtype: query.query_type().into(),
+        qclass: query.query_class().into(),
+        query: query.clone(),
+        op_code: message.metadata.op_code,
+        recursion_desired: message.metadata.recursion_desired,
+        checking_disabled: message.metadata.checking_disabled,
     })
 }
 
-fn hosts_response(req: &[u8], question: &Question, ipv4: &[[u8; 4]], ipv6: &[[u8; 16]]) -> Vec<u8> {
-    let answers = if question.qtype == TYPE_A {
-        ipv4.len()
-    } else {
-        ipv6.len()
-    };
-    let mut resp = Vec::new();
-    resp.extend_from_slice(&req[0..2]);
-    resp.extend_from_slice(&[0x81, 0x80]);
-    resp.extend_from_slice(&[0x00, 0x01]);
-    resp.extend_from_slice(&(answers as u16).to_be_bytes());
-    resp.extend_from_slice(&[0x00, 0x00, 0x00, 0x00]);
-    resp.extend_from_slice(&req[12..question.question_end]);
+fn hosts_response(question: &Question, ipv4: &[[u8; 4]], ipv6: &[[u8; 16]]) -> Vec<u8> {
+    let name = DnsName::from_ascii(&question.normalized_qname).unwrap_or_else(|_| DnsName::root());
+    let mut resp = response_for_question(question, DnsResponseCode::NoError);
     for ip in ipv4 {
-        write_rr_header(&mut resp, question.qtype, CLASS_IN, 60, 4);
-        resp.extend_from_slice(ip);
+        resp.add_answer(DnsRecord::from_rdata(
+            name.clone(),
+            60,
+            DnsRData::A(DnsA::new(ip[0], ip[1], ip[2], ip[3])),
+        ));
     }
     for ip in ipv6 {
-        write_rr_header(&mut resp, question.qtype, CLASS_IN, 60, 16);
-        resp.extend_from_slice(ip);
+        resp.add_answer(DnsRecord::from_rdata(
+            name.clone(),
+            60,
+            DnsRData::AAAA(DnsAaaa::from(std::net::Ipv6Addr::from(*ip))),
+        ));
     }
-    resp
+    resp.to_vec()
+        .unwrap_or_else(|_| servfail_response_for_question(question))
 }
 
+#[cfg(test)]
 fn write_rr_header(resp: &mut Vec<u8>, qtype: u16, qclass: u16, ttl: u32, rdlen: u16) {
     resp.extend_from_slice(&[0xc0, 0x0c]);
     resp.extend_from_slice(&qtype.to_be_bytes());
@@ -2580,48 +2725,34 @@ fn write_rr_header(resp: &mut Vec<u8>, qtype: u16, qclass: u16, ttl: u32, rdlen:
 }
 
 fn servfail_response(req: &[u8]) -> Vec<u8> {
-    let mut resp = req.to_vec();
-    if resp.len() >= 12 {
-        resp[2] = 0x81;
-        resp[3] = 0x82;
-        resp[6] = 0;
-        resp[7] = 0;
-        resp[8] = 0;
-        resp[9] = 0;
-        resp[10] = 0;
-        resp[11] = 0;
-    }
-    resp
+    response_for_query(req, DnsResponseCode::ServFail)
+        .to_vec()
+        .unwrap_or_else(|_| req.to_vec())
 }
 
-fn empty_success_response(req: &[u8]) -> Vec<u8> {
-    let mut resp = req.to_vec();
-    if resp.len() >= 12 {
-        resp[2] = 0x81;
-        resp[3] = 0x80;
-        resp[6] = 0;
-        resp[7] = 0;
-        resp[8] = 0;
-        resp[9] = 0;
-        resp[10] = 0;
-        resp[11] = 0;
-    }
-    resp
+fn servfail_response_for_question(question: &Question) -> Vec<u8> {
+    response_for_question(question, DnsResponseCode::ServFail)
+        .to_vec()
+        .unwrap_or_default()
+}
+
+fn empty_success_response(question: &Question) -> Vec<u8> {
+    response_for_question(question, DnsResponseCode::NoError)
+        .to_vec()
+        .unwrap_or_else(|_| servfail_response_for_question(question))
 }
 
 fn build_query(domain: &str, qtype: u16) -> Vec<u8> {
-    let mut msg = vec![0x12, 0x34, 0x01, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0];
     let domain = normalize_domain_lossy(domain);
-    if !domain.is_empty() {
-        for label in domain.split('.') {
-            msg.push(label.len() as u8);
-            msg.extend_from_slice(label.as_bytes());
-        }
-    }
-    msg.push(0);
-    msg.extend_from_slice(&qtype.to_be_bytes());
-    msg.extend_from_slice(&CLASS_IN.to_be_bytes());
-    msg
+    let name = if domain.is_empty() {
+        DnsName::root()
+    } else {
+        DnsName::from_ascii(&domain).unwrap_or_else(|_| DnsName::root())
+    };
+    let mut msg = DnsMessage::new(0x1234, DnsMessageType::Query, DnsOpCode::Query);
+    msg.metadata.recursion_desired = true;
+    msg.add_query(DnsQuery::query(name, DnsRecordType::from(qtype)));
+    msg.to_vec().unwrap_or_default()
 }
 
 fn lookup_qtype(record_type: &str) -> Result<u16> {
@@ -2664,146 +2795,61 @@ fn response_code_label(code: Option<u8>) -> String {
 }
 
 fn parse_lookup_records(resp: &[u8]) -> Result<Vec<DnsLookupRecord>> {
-    if resp.len() < 12 {
-        return Err(anyhow!("dns response is too short"));
-    }
-    let qdcount = u16::from_be_bytes([resp[4], resp[5]]) as usize;
-    let ancount = u16::from_be_bytes([resp[6], resp[7]]) as usize;
-    let mut offset = 12;
-    for _ in 0..qdcount {
-        offset = skip_dns_name(resp, offset)?;
-        if offset + 4 > resp.len() {
-            return Err(anyhow!("dns question is truncated"));
-        }
-        offset += 4;
-    }
-
-    let mut records = Vec::new();
-    for _ in 0..ancount {
-        let (name, next) = read_dns_name(resp, offset)?;
-        offset = next;
-        if offset + 10 > resp.len() {
-            return Err(anyhow!("dns rr header is truncated"));
-        }
-        let rr_type = u16::from_be_bytes([resp[offset], resp[offset + 1]]);
-        let ttl = u32::from_be_bytes([
-            resp[offset + 4],
-            resp[offset + 5],
-            resp[offset + 6],
-            resp[offset + 7],
-        ]);
-        let rdlen = u16::from_be_bytes([resp[offset + 8], resp[offset + 9]]) as usize;
-        offset += 10;
-        if offset + rdlen > resp.len() {
-            return Err(anyhow!("dns rr data is truncated"));
-        }
-        let value = format_rdata(resp, rr_type, offset, rdlen)?;
-        records.push(DnsLookupRecord {
-            name,
-            record_type: qtype_label(rr_type).to_string(),
-            ttl,
-            value,
-        });
-        offset += rdlen;
-    }
-    Ok(records)
+    let msg = DnsMessage::from_vec(resp).context("decode dns response")?;
+    Ok(msg
+        .answers
+        .iter()
+        .map(|record| {
+            let rr_type: u16 = record.record_type().into();
+            DnsLookupRecord {
+                name: normalize_domain_lossy(&record.name.to_ascii()),
+                record_type: qtype_label(rr_type).to_string(),
+                ttl: record.ttl,
+                value: format_hickory_rdata(&record.data),
+            }
+        })
+        .collect())
 }
 
-fn format_rdata(msg: &[u8], rr_type: u16, offset: usize, len: usize) -> Result<String> {
-    let data = &msg[offset..offset + len];
-    match rr_type {
-        TYPE_A if len == 4 => Ok(IpAddr::from([data[0], data[1], data[2], data[3]]).to_string()),
-        TYPE_AAAA if len == 16 => {
-            let mut ip = [0u8; 16];
-            ip.copy_from_slice(data);
-            Ok(IpAddr::from(ip).to_string())
+fn format_hickory_rdata(data: &DnsRData) -> String {
+    match data {
+        DnsRData::SOA(soa) => {
+            let mname = normalize_domain_lossy(&soa.mname.to_ascii());
+            let rname = normalize_domain_lossy(&soa.rname.to_ascii());
+            format!("{mname} {rname} serial={}", soa.serial)
         }
-        TYPE_CNAME | TYPE_NS => read_dns_name(msg, offset).map(|(name, _)| name),
-        TYPE_MX => {
-            if len < 3 {
-                return Err(anyhow!("dns mx record is truncated"));
-            }
-            let preference = u16::from_be_bytes([data[0], data[1]]);
-            let (exchange, _) = read_dns_name(msg, offset + 2)?;
-            Ok(format!("{preference} {exchange}"))
-        }
-        TYPE_TXT => {
-            let mut parts = Vec::new();
-            let mut pos = 0;
-            while pos < data.len() {
-                let text_len = data[pos] as usize;
-                pos += 1;
-                if pos + text_len > data.len() {
-                    return Err(anyhow!("dns txt record is truncated"));
-                }
-                parts.push(String::from_utf8_lossy(&data[pos..pos + text_len]).to_string());
-                pos += text_len;
-            }
-            Ok(parts.join(""))
-        }
-        TYPE_SOA => {
-            let (mname, next) = read_dns_name(msg, offset)?;
-            let (rname, next) = read_dns_name(msg, next)?;
-            if next + 20 > offset + len {
-                return Err(anyhow!("dns soa record is truncated"));
-            }
-            let serial =
-                u32::from_be_bytes([msg[next], msg[next + 1], msg[next + 2], msg[next + 3]]);
-            Ok(format!("{mname} {rname} serial={serial}"))
-        }
-        _ => Ok(format!("{} bytes", len)),
+        _ => normalize_domain_lossy(&data.to_string()),
     }
 }
 
-fn read_dns_name(msg: &[u8], offset: usize) -> Result<(String, usize)> {
-    let mut pos = offset;
-    let mut next = offset;
-    let mut jumped = false;
-    let mut labels = Vec::new();
-    let mut seen = 0usize;
-
-    loop {
-        let len = *msg
-            .get(pos)
-            .ok_or_else(|| anyhow!("dns name is truncated"))?;
-        if len & 0b1100_0000 == 0b1100_0000 {
-            let second = *msg
-                .get(pos + 1)
-                .ok_or_else(|| anyhow!("dns compression pointer is truncated"))?;
-            let pointer = (((len & 0b0011_1111) as usize) << 8) | second as usize;
-            if !jumped {
-                next = pos + 2;
-            }
-            pos = pointer;
-            jumped = true;
-            seen += 1;
-            if seen > msg.len() {
-                return Err(anyhow!("dns compression pointer loop"));
-            }
-            continue;
+fn response_for_query(req: &[u8], code: DnsResponseCode) -> DnsMessage {
+    match DnsMessage::from_vec(req) {
+        Ok(query) => {
+            let mut response = DnsMessage::response(query.metadata.id, query.metadata.op_code);
+            response.metadata.recursion_desired = query.metadata.recursion_desired;
+            response.metadata.recursion_available = true;
+            response.metadata.checking_disabled = query.metadata.checking_disabled;
+            response.metadata.response_code = code;
+            response.add_queries(query.queries);
+            response
         }
-        if len & 0b1100_0000 != 0 {
-            return Err(anyhow!("unsupported dns name label type"));
-        }
-        pos += 1;
-        if len == 0 {
-            if !jumped {
-                next = pos;
-            }
-            break;
-        }
-        let end = pos + len as usize;
-        if end > msg.len() {
-            return Err(anyhow!("dns name label is truncated"));
-        }
-        labels.push(String::from_utf8_lossy(&msg[pos..end]).to_string());
-        pos = end;
-        if !jumped {
-            next = pos;
+        Err(_) => {
+            let id = dns_message_id(req).unwrap_or(0);
+            let mut response = DnsMessage::response(id, DnsOpCode::Query);
+            response.metadata.response_code = code;
+            response
         }
     }
+}
 
-    Ok((labels.join("."), next))
+fn response_for_question(question: &Question, code: DnsResponseCode) -> DnsMessage {
+    let mut response = DnsMessage::response(question.id, question.op_code);
+    response.metadata.recursion_desired = question.recursion_desired;
+    response.metadata.recursion_available = true;
+    response.metadata.checking_disabled = question.checking_disabled;
+    response.metadata.response_code = code;
+    response.add_query(question.query.clone());
+    response
 }
 
 enum ResponseClass {
@@ -2829,53 +2875,14 @@ fn answer_count(resp: &[u8]) -> Option<u16> {
 }
 
 fn strip_aaaa_records(resp: &[u8]) -> Result<Vec<u8>> {
-    if resp.len() < 12 {
-        return Err(anyhow!("dns response is too short"));
-    }
-    let qdcount = u16::from_be_bytes([resp[4], resp[5]]) as usize;
-    let counts = [
-        u16::from_be_bytes([resp[6], resp[7]]) as usize,
-        u16::from_be_bytes([resp[8], resp[9]]) as usize,
-        u16::from_be_bytes([resp[10], resp[11]]) as usize,
-    ];
-    let mut offset = 12;
-    for _ in 0..qdcount {
-        offset = skip_dns_name(resp, offset)?;
-        if offset + 4 > resp.len() {
-            return Err(anyhow!("dns question is truncated"));
-        }
-        offset += 4;
-    }
-
-    let mut out = resp[..offset].to_vec();
-    let mut next_counts = [0u16; 3];
-    for (section, count) in counts.into_iter().enumerate() {
-        for _ in 0..count {
-            let start = offset;
-            offset = skip_dns_name(resp, offset)?;
-            if offset + 10 > resp.len() {
-                return Err(anyhow!("dns rr header is truncated"));
-            }
-            let rr_type = u16::from_be_bytes([resp[offset], resp[offset + 1]]);
-            let rdlen = u16::from_be_bytes([resp[offset + 8], resp[offset + 9]]) as usize;
-            offset += 10;
-            if offset + rdlen > resp.len() {
-                return Err(anyhow!("dns rr data is truncated"));
-            }
-            offset += rdlen;
-            if rr_type != TYPE_AAAA {
-                out.extend_from_slice(&resp[start..offset]);
-                next_counts[section] += 1;
-            }
-        }
-    }
-    if offset != resp.len() {
-        return Err(anyhow!("dns response contains trailing bytes"));
-    }
-    out[6..8].copy_from_slice(&next_counts[0].to_be_bytes());
-    out[8..10].copy_from_slice(&next_counts[1].to_be_bytes());
-    out[10..12].copy_from_slice(&next_counts[2].to_be_bytes());
-    Ok(out)
+    let mut msg = DnsMessage::from_vec(resp).context("decode dns response")?;
+    msg.answers
+        .retain(|record| record.record_type() != DnsRecordType::AAAA);
+    msg.authorities
+        .retain(|record| record.record_type() != DnsRecordType::AAAA);
+    msg.additionals
+        .retain(|record| record.record_type() != DnsRecordType::AAAA);
+    msg.to_vec().context("encode dns response")
 }
 
 fn skip_dns_name(msg: &[u8], mut offset: usize) -> Result<usize> {
@@ -3280,7 +3287,7 @@ mod tests {
     fn parse_lookup_records_extracts_a_answer() {
         let query = build_query("answer.example", TYPE_A);
         let question = parse_question(&query).expect("parse question");
-        let response = hosts_response(&query, &question, &[[192, 0, 2, 44]], &[]);
+        let response = hosts_response(&question, &[[192, 0, 2, 44]], &[]);
         let records = parse_lookup_records(&response).expect("parse records");
 
         assert_eq!(records.len(), 1);
