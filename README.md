@@ -110,6 +110,10 @@ Completed optimizations:
 - Reused DoQ endpoints and connections; open a new QUIC stream per query.
 - Reused TCP and DoT connections with DNS ID-based pipelining.
 - Reused SOCKS5 UDP associations separately from direct UDP reuse.
+- Made desktop status updates event-driven with coalesced UI emissions.
+- Reused cached system-DNS adapter data for apply/restore operations.
+- Moved startup adapter refresh into a background warm-up after first paint.
+- Replaced render-time config dirty checks with edit-time signature checks.
 
 ## License
 
