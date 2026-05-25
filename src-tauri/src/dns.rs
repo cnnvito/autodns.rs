@@ -14,9 +14,9 @@ use std::io::BufReader;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::io::{split, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadHalf, WriteHalf};
 use tokio::net::{TcpListener, TcpStream, UdpSocket};
-use tokio::sync::{oneshot, watch, OwnedSemaphorePermit, Semaphore};
+use tokio::sync::{oneshot, watch, Mutex as AsyncMutex, OwnedSemaphorePermit, Semaphore};
 use tokio::task::JoinHandle;
 use tokio_rustls::rustls::pki_types::ServerName;
 use tokio_rustls::rustls::{
@@ -152,6 +152,10 @@ struct UpstreamClient {
     proxy: Option<ProxyEndpoint>,
     http: Option<reqwest::Client>,
     udp: Arc<Mutex<Option<Arc<UdpUpstreamClient>>>>,
+    socks5_udp: Arc<Mutex<Option<Arc<Socks5UdpUpstreamClient>>>>,
+    tcp: Arc<Mutex<Option<Arc<LenPrefixedUpstreamClient>>>>,
+    dot: Arc<Mutex<Option<Arc<LenPrefixedUpstreamClient>>>>,
+    doq: Arc<Mutex<Option<Arc<DoqUpstreamClient>>>>,
 }
 
 #[derive(Clone)]
@@ -170,12 +174,38 @@ struct ProxyEndpoint {
 }
 
 type PendingUdpResponses = Arc<Mutex<HashMap<u16, oneshot::Sender<Vec<u8>>>>>;
+type PendingStreamResponses = Arc<Mutex<HashMap<u16, oneshot::Sender<Vec<u8>>>>>;
+type BoxedAsyncIo = Box<dyn AsyncIo>;
+
+trait AsyncIo: AsyncRead + AsyncWrite + Unpin + Send {}
+
+impl<T> AsyncIo for T where T: AsyncRead + AsyncWrite + Unpin + Send {}
 
 struct UdpUpstreamClient {
     socket: Arc<UdpSocket>,
     pending: PendingUdpResponses,
     next_id: Mutex<u16>,
     stop_tx: watch::Sender<bool>,
+}
+
+struct Socks5UdpUpstreamClient {
+    _control: TcpStream,
+    socket: Arc<UdpSocket>,
+    relay_address: String,
+    pending: PendingUdpResponses,
+    next_id: Mutex<u16>,
+    stop_tx: watch::Sender<bool>,
+}
+
+struct LenPrefixedUpstreamClient {
+    writer: AsyncMutex<WriteHalf<BoxedAsyncIo>>,
+    pending: PendingStreamResponses,
+    next_id: Mutex<u16>,
+}
+
+struct DoqUpstreamClient {
+    _endpoint: quinn::Endpoint,
+    connection: quinn::Connection,
 }
 
 #[derive(Clone, Default)]
@@ -457,6 +487,10 @@ fn build_resolver(cfg: &CoreConfig, logs: LogBuffer) -> Result<Resolver> {
                 proxy,
                 http,
                 udp: Arc::new(Mutex::new(None)),
+                socks5_udp: Arc::new(Mutex::new(None)),
+                tcp: Arc::new(Mutex::new(None)),
+                dot: Arc::new(Mutex::new(None)),
+                doq: Arc::new(Mutex::new(None)),
             },
         );
     }
@@ -468,6 +502,10 @@ fn build_resolver(cfg: &CoreConfig, logs: LogBuffer) -> Result<Resolver> {
             proxy: None,
             http: None,
             udp: Arc::new(Mutex::new(None)),
+            socks5_udp: Arc::new(Mutex::new(None)),
+            tcp: Arc::new(Mutex::new(None)),
+            dot: Arc::new(Mutex::new(None)),
+            doq: Arc::new(Mutex::new(None)),
         })
     } else {
         None
@@ -1082,15 +1120,15 @@ impl UpstreamClient {
         let fut = async {
             match self.endpoint.scheme.as_str() {
                 "udp" => {
-                    if let Some(proxy) = &self.proxy {
-                        exchange_udp_over_socks5(proxy, &self.endpoint, &req).await
+                    if self.proxy.is_some() {
+                        self.exchange_socks5_udp(&req).await
                     } else {
                         self.exchange_udp(&req).await
                     }
                 }
-                "tcp" => exchange_tcp_endpoint(&self.endpoint, self.proxy.as_ref(), &req).await,
-                "dot" => exchange_dot(&self.endpoint, self.proxy.as_ref(), &req).await,
-                "doq" | "quic" => exchange_doq(&self.endpoint, self.proxy.as_ref(), &req).await,
+                "tcp" => self.exchange_tcp(&req).await,
+                "dot" => self.exchange_dot(&req).await,
+                "doq" | "quic" => self.exchange_doq(&req).await,
                 "http" | "https" => exchange_doh(&self.endpoint, self.http.as_ref(), &req).await,
                 _ => Err(anyhow!(
                     "unsupported upstream protocol {}",
@@ -1122,6 +1160,140 @@ impl UpstreamClient {
             return Ok(existing.clone());
         }
         *udp = Some(client.clone());
+        Ok(client)
+    }
+
+    async fn exchange_socks5_udp(&self, req: &[u8]) -> Result<Vec<u8>> {
+        let client = self.socks5_udp_client().await?;
+        let result = client.exchange(&self.endpoint.address, req).await;
+        if result.is_err() {
+            let mut socks5_udp = self.socks5_udp.lock();
+            if socks5_udp
+                .as_ref()
+                .is_some_and(|cached| Arc::ptr_eq(cached, &client))
+            {
+                *socks5_udp = None;
+            }
+        }
+        result
+    }
+
+    async fn socks5_udp_client(&self) -> Result<Arc<Socks5UdpUpstreamClient>> {
+        if let Some(client) = self.socks5_udp.lock().clone() {
+            return Ok(client);
+        }
+        let proxy = self
+            .proxy
+            .as_ref()
+            .ok_or_else(|| anyhow!("SOCKS5 UDP proxy is not configured"))?;
+        let client = Socks5UdpUpstreamClient::new(proxy).await?;
+        let mut socks5_udp = self.socks5_udp.lock();
+        if let Some(existing) = socks5_udp.as_ref() {
+            return Ok(existing.clone());
+        }
+        *socks5_udp = Some(client.clone());
+        Ok(client)
+    }
+
+    async fn exchange_tcp(&self, req: &[u8]) -> Result<Vec<u8>> {
+        let client = self.tcp_client().await?;
+        let result = client.exchange(req).await;
+        if result.is_err() {
+            let mut tcp = self.tcp.lock();
+            if tcp
+                .as_ref()
+                .is_some_and(|cached| Arc::ptr_eq(cached, &client))
+            {
+                *tcp = None;
+            }
+        }
+        result
+    }
+
+    async fn tcp_client(&self) -> Result<Arc<LenPrefixedUpstreamClient>> {
+        if let Some(client) = self.tcp.lock().clone() {
+            return Ok(client);
+        }
+        let stream: BoxedAsyncIo = if let Some(proxy) = &self.proxy {
+            Box::new(socks5_connect(proxy, &self.endpoint.address).await?)
+        } else {
+            Box::new(TcpStream::connect(&self.endpoint.address).await?)
+        };
+        let mut tcp = self.tcp.lock();
+        if let Some(existing) = tcp.as_ref() {
+            return Ok(existing.clone());
+        }
+        let client = LenPrefixedUpstreamClient::new(stream);
+        *tcp = Some(client.clone());
+        Ok(client)
+    }
+
+    async fn exchange_dot(&self, req: &[u8]) -> Result<Vec<u8>> {
+        let client = self.dot_client().await?;
+        let result = client.exchange(req).await;
+        if result.is_err() {
+            let mut dot = self.dot.lock();
+            if dot
+                .as_ref()
+                .is_some_and(|cached| Arc::ptr_eq(cached, &client))
+            {
+                *dot = None;
+            }
+        }
+        result
+    }
+
+    async fn dot_client(&self) -> Result<Arc<LenPrefixedUpstreamClient>> {
+        if let Some(client) = self.dot.lock().clone() {
+            return Ok(client);
+        }
+        let connector = TlsConnector::from(client_tls_config());
+        let server_name = ServerName::try_from(self.endpoint.server_name.clone())
+            .context("invalid DoT server name")?;
+        let stream: BoxedAsyncIo = if let Some(proxy) = &self.proxy {
+            let stream = socks5_connect(proxy, &self.endpoint.address).await?;
+            Box::new(connector.connect(server_name, stream).await?)
+        } else {
+            let stream = TcpStream::connect(&self.endpoint.address).await?;
+            Box::new(connector.connect(server_name, stream).await?)
+        };
+        let mut dot = self.dot.lock();
+        if let Some(existing) = dot.as_ref() {
+            return Ok(existing.clone());
+        }
+        let client = LenPrefixedUpstreamClient::new(stream);
+        *dot = Some(client.clone());
+        Ok(client)
+    }
+
+    async fn exchange_doq(&self, req: &[u8]) -> Result<Vec<u8>> {
+        if self.proxy.is_some() {
+            return Err(anyhow!("DoQ over SOCKS5 is not supported yet"));
+        }
+        let client = self.doq_client().await?;
+        let result = client.exchange(req).await;
+        if result.is_err() {
+            let mut doq = self.doq.lock();
+            if doq
+                .as_ref()
+                .is_some_and(|cached| Arc::ptr_eq(cached, &client))
+            {
+                *doq = None;
+            }
+        }
+        result
+    }
+
+    async fn doq_client(&self) -> Result<Arc<DoqUpstreamClient>> {
+        if let Some(client) = self.doq.lock().clone() {
+            return Ok(client);
+        }
+        let client = DoqUpstreamClient::connect(&self.endpoint).await?;
+        let mut doq = self.doq.lock();
+        if let Some(existing) = doq.as_ref() {
+            return Ok(existing.clone());
+        }
+        *doq = Some(client.clone());
         Ok(client)
     }
 }
@@ -1192,6 +1364,164 @@ impl Drop for UdpUpstreamClient {
     }
 }
 
+impl Socks5UdpUpstreamClient {
+    async fn new(proxy: &ProxyEndpoint) -> Result<Arc<Self>> {
+        let (control, relay_address) = socks5_udp_associate(proxy).await?;
+        let socket = Arc::new(UdpSocket::bind("0.0.0.0:0").await?);
+        let pending = Arc::new(Mutex::new(HashMap::new()));
+        let (stop_tx, stop_rx) = watch::channel(false);
+        let client = Arc::new(Self {
+            _control: control,
+            socket,
+            relay_address,
+            pending,
+            next_id: Mutex::new(0),
+            stop_tx,
+        });
+        tokio::spawn(run_socks5_udp_recv_loop(
+            client.socket.clone(),
+            client.pending.clone(),
+            stop_rx,
+        ));
+        Ok(client)
+    }
+
+    async fn exchange(&self, target: &str, req: &[u8]) -> Result<Vec<u8>> {
+        let original_id = dns_message_id(req).ok_or_else(|| anyhow!("dns query is too short"))?;
+        let local_id = self.allocate_id();
+        let mut upstream_req = req.to_vec();
+        set_id(&mut upstream_req, local_id);
+        let (tx, rx) = oneshot::channel();
+        self.pending.lock().insert(local_id, tx);
+        let pending_guard = PendingUdpResponseGuard {
+            pending: self.pending.clone(),
+            id: local_id,
+            active: true,
+        };
+
+        let packet = socks5_udp_packet(target, &upstream_req)?;
+        if let Err(err) = self.socket.send_to(&packet, &self.relay_address).await {
+            return Err(err.into());
+        }
+
+        let result = match rx.await {
+            Ok(mut resp) => {
+                set_id(&mut resp, original_id);
+                Ok(resp)
+            }
+            Err(_) => Err(anyhow!("SOCKS5 UDP response receiver closed")),
+        };
+        pending_guard.disarm();
+        result
+    }
+
+    fn allocate_id(&self) -> u16 {
+        let mut next_id = self.next_id.lock();
+        loop {
+            *next_id = next_id.wrapping_add(1);
+            let id = *next_id;
+            if !self.pending.lock().contains_key(&id) {
+                return id;
+            }
+        }
+    }
+}
+
+impl Drop for Socks5UdpUpstreamClient {
+    fn drop(&mut self) {
+        let _ = self.stop_tx.send(true);
+        self.pending.lock().clear();
+    }
+}
+
+impl LenPrefixedUpstreamClient {
+    fn new(stream: BoxedAsyncIo) -> Arc<Self> {
+        let (reader, writer) = split(stream);
+        let pending = Arc::new(Mutex::new(HashMap::new()));
+        let client = Arc::new(Self {
+            writer: AsyncMutex::new(writer),
+            pending,
+            next_id: Mutex::new(0),
+        });
+        tokio::spawn(run_len_prefixed_recv_loop(reader, client.pending.clone()));
+        client
+    }
+
+    async fn exchange(&self, req: &[u8]) -> Result<Vec<u8>> {
+        let original_id = dns_message_id(req).ok_or_else(|| anyhow!("dns query is too short"))?;
+        let local_id = self.allocate_id();
+        let mut upstream_req = req.to_vec();
+        set_id(&mut upstream_req, local_id);
+        let (tx, rx) = oneshot::channel();
+        self.pending.lock().insert(local_id, tx);
+        let pending_guard = PendingUdpResponseGuard {
+            pending: self.pending.clone(),
+            id: local_id,
+            active: true,
+        };
+
+        let query = len_prefixed_dns_message(&upstream_req)?;
+        {
+            let mut writer = self.writer.lock().await;
+            if let Err(err) = writer.write_all(&query).await {
+                return Err(err.into());
+            }
+        }
+
+        let result = match rx.await {
+            Ok(mut resp) => {
+                set_id(&mut resp, original_id);
+                Ok(resp)
+            }
+            Err(_) => Err(anyhow!("stream upstream response receiver closed")),
+        };
+        pending_guard.disarm();
+        result
+    }
+
+    fn allocate_id(&self) -> u16 {
+        let mut next_id = self.next_id.lock();
+        loop {
+            *next_id = next_id.wrapping_add(1);
+            let id = *next_id;
+            if !self.pending.lock().contains_key(&id) {
+                return id;
+            }
+        }
+    }
+}
+
+impl DoqUpstreamClient {
+    async fn connect(endpoint: &Endpoint) -> Result<Arc<Self>> {
+        let remote: SocketAddr = endpoint
+            .address
+            .parse()
+            .with_context(|| format!("parse DoQ remote address {}", endpoint.address))?;
+        let mut quic_endpoint = quinn::Endpoint::client("0.0.0.0:0".parse()?)?;
+        quic_endpoint.set_default_client_config(doq_client_config()?);
+        let connection = quic_endpoint
+            .connect(remote, &endpoint.server_name)?
+            .await
+            .with_context(|| format!("connect DoQ upstream {}", endpoint.address))?;
+        Ok(Arc::new(Self {
+            _endpoint: quic_endpoint,
+            connection,
+        }))
+    }
+
+    async fn exchange(&self, req: &[u8]) -> Result<Vec<u8>> {
+        let (mut send, mut recv) = self.connection.open_bi().await.context("open DoQ stream")?;
+        let query = len_prefixed_dns_message(req)?;
+        send.write_all(&query).await.context("write DoQ query")?;
+        send.finish().context("finish DoQ query stream")?;
+        let response = recv
+            .read_to_end(DNS_WIRE_LIMIT + 2)
+            .await
+            .context("read DoQ response")?;
+        parse_len_prefixed_dns_message(&response)
+    }
+}
+
 struct PendingUdpResponseGuard {
     pending: PendingUdpResponses,
     id: u16,
@@ -1236,24 +1566,55 @@ async fn run_udp_upstream_recv_loop(
     }
 }
 
-async fn exchange_udp_over_socks5(
-    proxy: &ProxyEndpoint,
-    endpoint: &Endpoint,
-    req: &[u8],
-) -> Result<Vec<u8>> {
-    let (mut control, relay_address) = socks5_udp_associate(proxy).await?;
-    let _keepalive = &mut control;
-    let socket = UdpSocket::bind("0.0.0.0:0").await?;
-    let packet = socks5_udp_packet(&endpoint.address, req)?;
-    socket.send_to(&packet, &relay_address).await?;
+async fn run_socks5_udp_recv_loop(
+    socket: Arc<UdpSocket>,
+    pending: PendingUdpResponses,
+    mut stop: watch::Receiver<bool>,
+) {
     let mut buf = vec![0u8; DNS_WIRE_LIMIT + 512];
-    let (len, _) = socket.recv_from(&mut buf).await?;
-    parse_socks5_udp_payload(&buf[..len])
+    loop {
+        let recv = tokio::select! {
+            _ = stop.changed() => break,
+            recv = socket.recv_from(&mut buf) => recv,
+        };
+        let Ok((len, _)) = recv else {
+            break;
+        };
+        let Ok(resp) = parse_socks5_udp_payload(&buf[..len]) else {
+            continue;
+        };
+        let Some(id) = dns_message_id(&resp) else {
+            continue;
+        };
+        if let Some(tx) = pending.lock().remove(&id) {
+            let _ = tx.send(resp);
+        }
+    }
+    pending.lock().clear();
 }
 
-async fn exchange_tcp(addr: &str, req: &[u8]) -> Result<Vec<u8>> {
-    let mut stream = TcpStream::connect(addr).await?;
-    exchange_len_prefixed(&mut stream, req).await
+async fn run_len_prefixed_recv_loop(
+    mut reader: ReadHalf<BoxedAsyncIo>,
+    pending: PendingStreamResponses,
+) {
+    loop {
+        let mut len_buf = [0u8; 2];
+        if reader.read_exact(&mut len_buf).await.is_err() {
+            break;
+        }
+        let len = u16::from_be_bytes(len_buf) as usize;
+        let mut resp = vec![0u8; len];
+        if reader.read_exact(&mut resp).await.is_err() {
+            break;
+        }
+        let Some(id) = dns_message_id(&resp) else {
+            continue;
+        };
+        if let Some(tx) = pending.lock().remove(&id) {
+            let _ = tx.send(resp);
+        }
+    }
+    pending.lock().clear();
 }
 
 async fn socks5_connect(proxy: &ProxyEndpoint, target: &str) -> Result<TcpStream> {
@@ -1455,67 +1816,6 @@ fn parse_socks5_udp_payload(packet: &[u8]) -> Result<Vec<u8>> {
     Ok(packet[offset..].to_vec())
 }
 
-async fn exchange_tcp_endpoint(
-    endpoint: &Endpoint,
-    proxy: Option<&ProxyEndpoint>,
-    req: &[u8],
-) -> Result<Vec<u8>> {
-    if let Some(proxy) = proxy {
-        let mut stream = socks5_connect(proxy, &endpoint.address).await?;
-        exchange_len_prefixed(&mut stream, req).await
-    } else {
-        exchange_tcp(&endpoint.address, req).await
-    }
-}
-
-async fn exchange_dot(
-    endpoint: &Endpoint,
-    proxy: Option<&ProxyEndpoint>,
-    req: &[u8],
-) -> Result<Vec<u8>> {
-    let connector = TlsConnector::from(client_tls_config());
-    let server_name =
-        ServerName::try_from(endpoint.server_name.clone()).context("invalid DoT server name")?;
-    if let Some(proxy) = proxy {
-        let stream = socks5_connect(proxy, &endpoint.address).await?;
-        let mut tls = connector.connect(server_name, stream).await?;
-        exchange_len_prefixed(&mut tls, req).await
-    } else {
-        let stream = TcpStream::connect(&endpoint.address).await?;
-        let mut tls = connector.connect(server_name, stream).await?;
-        exchange_len_prefixed(&mut tls, req).await
-    }
-}
-
-async fn exchange_doq(
-    endpoint: &Endpoint,
-    proxy: Option<&ProxyEndpoint>,
-    req: &[u8],
-) -> Result<Vec<u8>> {
-    if proxy.is_some() {
-        return Err(anyhow!("DoQ over SOCKS5 is not supported yet"));
-    }
-    let remote: SocketAddr = endpoint
-        .address
-        .parse()
-        .with_context(|| format!("parse DoQ remote address {}", endpoint.address))?;
-    let mut quic_endpoint = quinn::Endpoint::client("0.0.0.0:0".parse()?)?;
-    quic_endpoint.set_default_client_config(doq_client_config()?);
-    let connection = quic_endpoint
-        .connect(remote, &endpoint.server_name)?
-        .await
-        .with_context(|| format!("connect DoQ upstream {}", endpoint.address))?;
-    let (mut send, mut recv) = connection.open_bi().await.context("open DoQ stream")?;
-    let query = len_prefixed_dns_message(req)?;
-    send.write_all(&query).await.context("write DoQ query")?;
-    send.finish().context("finish DoQ query stream")?;
-    let response = recv
-        .read_to_end(DNS_WIRE_LIMIT + 2)
-        .await
-        .context("read DoQ response")?;
-    parse_len_prefixed_dns_message(&response)
-}
-
 fn doq_client_config() -> Result<quinn::ClientConfig> {
     use quinn::crypto::rustls::QuicClientConfig;
 
@@ -1528,20 +1828,6 @@ fn doq_client_config() -> Result<quinn::ClientConfig> {
     Ok(quinn::ClientConfig::new(Arc::new(
         QuicClientConfig::try_from(tls)?,
     )))
-}
-
-async fn exchange_len_prefixed<S>(stream: &mut S, req: &[u8]) -> Result<Vec<u8>>
-where
-    S: AsyncRead + AsyncWrite + Unpin,
-{
-    stream.write_all(&(req.len() as u16).to_be_bytes()).await?;
-    stream.write_all(req).await?;
-    let mut len_buf = [0u8; 2];
-    stream.read_exact(&mut len_buf).await?;
-    let len = u16::from_be_bytes(len_buf) as usize;
-    let mut resp = vec![0u8; len];
-    stream.read_exact(&mut resp).await?;
-    Ok(resp)
 }
 
 fn len_prefixed_dns_message(req: &[u8]) -> Result<Vec<u8>> {

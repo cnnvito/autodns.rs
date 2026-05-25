@@ -107,13 +107,9 @@ Completed optimizations:
 - Added health-check backoff while an upstream remains unhealthy.
 - Reduced idle UI polling and removed tray refreshes from regular status polling.
 - Used `arc-swap` for lock-free runtime resolver reads during hot reload.
-
-Planned optimizations:
-
-- Reuse DoQ endpoints and connections; open a new QUIC stream per query.
-- Add TCP and DoT connection reuse with pipelining.
-- Consider SOCKS5 UDP association reuse separately from direct UDP reuse.
-- Add log sampling or coalescing for repeated upstream failures.
+- Reused DoQ endpoints and connections; open a new QUIC stream per query.
+- Reused TCP and DoT connections with DNS ID-based pipelining.
+- Reused SOCKS5 UDP associations separately from direct UDP reuse.
 
 ## License
 
