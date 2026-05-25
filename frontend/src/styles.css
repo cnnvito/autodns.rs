@@ -1076,6 +1076,22 @@ h2 {
   gap: 14px;
 }
 
+.appVersionLine {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 12px;
+  min-height: 28px;
+}
+
+.appVersionLine strong {
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 700;
+}
+
 .dataTable {
   display: flex;
   flex-direction: column;

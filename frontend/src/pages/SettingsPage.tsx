@@ -1,5 +1,7 @@
+import { getVersion } from "@tauri-apps/api/app";
 import { open } from "@tauri-apps/plugin-dialog";
 import { FolderOpen } from "lucide-react";
+import { useEffect, useState } from "react";
 
 import { logLevelOptions, serverModeOptions } from "../features/config/options";
 import type { ConfigPageProps } from "../features/config/doc";
@@ -42,6 +44,22 @@ export function SettingsPage({
   onThemeChange,
   onPreferencesChange
 }: SettingsPageProps) {
+  const [appVersion, setAppVersion] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+    getVersion()
+      .then((version) => {
+        if (!cancelled) {
+          setAppVersion(version);
+        }
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   if (!doc) {
     return (
       <section className="panel configPanel">
@@ -224,6 +242,11 @@ export function SettingsPage({
           <NumberField label="失败阈值" value={cfg.healthcheck.failureThreshold} onChange={(value) => updateHealthcheck("failureThreshold", value)} />
           <NumberField label="恢复阈值" value={cfg.healthcheck.recoveryThreshold} onChange={(value) => updateHealthcheck("recoveryThreshold", value)} />
         </div>
+      </section>
+
+      <section className="appVersionLine" aria-label="应用版本">
+        <span>autodns</span>
+        <strong>{appVersion ? `v${appVersion}` : "版本读取中"}</strong>
       </section>
     </section>
   );
