@@ -6,8 +6,11 @@ use crate::desktop::{
     ConfigDocument, DesktopConfig, DesktopHostStatus, DesktopRouteStatus, SystemDnsSettings,
 };
 use anyhow::{anyhow, Context, Result};
+use parking_lot::Mutex;
 use rusqlite::{params, Connection, OptionalExtension};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::time::Duration;
 use url::Url;
 
 const CONFIG_DOCUMENT_PATH: &str = "local://autodns/config";
@@ -15,6 +18,7 @@ const CONFIG_DOCUMENT_PATH: &str = "local://autodns/config";
 #[derive(Clone)]
 pub struct ConfigStore {
     path: PathBuf,
+    conn: Arc<Mutex<Connection>>,
 }
 
 #[derive(Clone)]
@@ -42,7 +46,13 @@ impl ConfigStore {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).context("create config directory")?;
         }
-        let store = Self { path };
+        let conn = Connection::open(&path)
+            .with_context(|| format!("open database: {}", path.display()))?;
+        configure_connection(&conn)?;
+        let store = Self {
+            path,
+            conn: Arc::new(Mutex::new(conn)),
+        };
         store.with_conn(|conn| {
             migrate(conn)?;
             if is_empty(conn)? {
@@ -110,8 +120,7 @@ impl ConfigStore {
     }
 
     fn with_conn<T>(&self, f: impl FnOnce(&mut Connection) -> Result<T>) -> Result<T> {
-        let mut conn = Connection::open(&self.path)
-            .with_context(|| format!("open database: {}", self.path.display()))?;
+        let mut conn = self.conn.lock();
         f(&mut conn)
     }
 }
@@ -257,6 +266,20 @@ fn migrate(conn: &Connection) -> Result<()> {
         [],
     )
     .context("seed system dns settings")?;
+    Ok(())
+}
+
+fn configure_connection(conn: &Connection) -> Result<()> {
+    conn.busy_timeout(Duration::from_secs(5))
+        .context("set sqlite busy timeout")?;
+    conn.execute_batch(
+        r#"
+        PRAGMA foreign_keys = ON;
+        PRAGMA journal_mode = WAL;
+        PRAGMA synchronous = NORMAL;
+        "#,
+    )
+    .context("configure sqlite connection")?;
     Ok(())
 }
 

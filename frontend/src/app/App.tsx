@@ -42,8 +42,6 @@ const defaultPreferences: DesktopPreferences = {
   trayMessage: ""
 };
 
-const STATUS_REFRESH_MS = 10000;
-
 function applyOptimisticSystemDnsSettings(status: SystemDnsStatus, settings: SystemDnsSettings): SystemDnsStatus {
   const selectedAdapterIds = new Set(settings.selectedAdapterIds);
   return {
@@ -69,11 +67,16 @@ function needsRuntimeRestart(current: ConfigDocument | null, saved: ConfigDocume
     || currentServer.path !== savedServer.path;
 }
 
+function sameConfig(current: ConfigDocument, saved: ConfigDocument | null): boolean {
+  return saved ? JSON.stringify(current.config) === JSON.stringify(saved.config) : false;
+}
+
 export function App() {
   const [status, setStatus] = useState<DesktopStatus | null>(null);
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [configDoc, setConfigDoc] = useState<ConfigDocument | null>(null);
   const [savedConfigDoc, setSavedConfigDoc] = useState<ConfigDocument | null>(null);
+  const [dirty, setDirty] = useState(false);
   const [notifications, setNotifications] = useState<AppNotification[]>([]);
   const [busy, setBusy] = useState(false);
   const [theme, setTheme] = useState<ThemePreference>(() => loadThemePreference());
@@ -120,10 +123,6 @@ export function App() {
     });
   }, []);
 
-  async function refreshStatus() {
-    setStatus(await loadStatus());
-  }
-
   async function refreshSystemDns(force = false) {
     const nextSystemDns = await loadSystemDnsStatus(force);
     if (pendingSystemDnsSave.current === 0) {
@@ -142,12 +141,6 @@ export function App() {
 
   useEffect(() => {
     bootstrap().catch((err: unknown) => notifyError("初始化失败", err));
-    const statusTimer = window.setInterval(() => {
-      refreshStatus().catch(() => undefined);
-    }, STATUS_REFRESH_MS);
-    return () => {
-      window.clearInterval(statusTimer);
-    };
   }, [notifyError]);
 
   async function bootstrap() {
@@ -160,6 +153,7 @@ export function App() {
     ]);
     setConfigDoc(doc);
     setSavedConfigDoc(doc);
+    setDirty(false);
     setPreferences(prefs);
     setStatus(nextStatus);
     setLogs(nextLogs);
@@ -217,13 +211,12 @@ export function App() {
 
   const running = status?.running ?? false;
   const lastStarted = useMemo(() => formatDate(status?.startedAt), [status?.startedAt]);
-  const dirty = useMemo(() => {
-    if (!configDoc || !savedConfigDoc) {
-      return false;
-    }
-    return JSON.stringify(configDoc.config) !== JSON.stringify(savedConfigDoc.config);
-  }, [configDoc, savedConfigDoc]);
   const restartRequired = useMemo(() => needsRuntimeRestart(configDoc, savedConfigDoc), [configDoc, savedConfigDoc]);
+
+  const handleConfigDocChange = useCallback((doc: ConfigDocument) => {
+    setConfigDoc(doc);
+    setDirty(!sameConfig(doc, savedConfigDoc));
+  }, [savedConfigDoc]);
 
   async function handleStart() {
     setBusy(true);
@@ -261,6 +254,7 @@ export function App() {
     try {
       const result = await saveConfig(configDoc);
       setSavedConfigDoc(configDoc);
+      setDirty(false);
       await refresh();
       if (result.action === "restarted") {
         notify("success", "配置已保存并重启", "监听入口发生变化，服务已自动重启。");
@@ -311,6 +305,7 @@ export function App() {
       return;
     }
     setConfigDoc(savedConfigDoc);
+    setDirty(false);
     notify("info", "已放弃修改", "配置已恢复到上次保存状态。");
   }
 
@@ -492,11 +487,11 @@ export function App() {
           </Tabs.Content>
 
           <Tabs.Content className="mainTabsContent" value="rules">
-            <RulesPage doc={configDoc} onChange={setConfigDoc} />
+            <RulesPage doc={configDoc} onChange={handleConfigDocChange} />
           </Tabs.Content>
 
           <Tabs.Content className="mainTabsContent" value="upstreams">
-            <UpstreamsPage doc={configDoc} onChange={setConfigDoc} />
+            <UpstreamsPage doc={configDoc} onChange={handleConfigDocChange} />
           </Tabs.Content>
 
           <Tabs.Content className="mainTabsContent" value="lookup">
@@ -520,7 +515,7 @@ export function App() {
           <Tabs.Content className="mainTabsContent" value="settings">
             <SettingsPage
               doc={configDoc}
-              onChange={setConfigDoc}
+              onChange={handleConfigDocChange}
               theme={theme}
               themeOptions={themeOptions}
               preferences={preferences}

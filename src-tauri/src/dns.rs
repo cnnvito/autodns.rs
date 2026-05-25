@@ -95,6 +95,10 @@ impl RunningRuntime {
         self.state.resolver()
     }
 
+    pub(crate) fn set_health_listener(&self, listener: HealthListener) {
+        self.state.resolver().health.set_listener(listener);
+    }
+
     pub async fn stop(self) {
         let _ = self.stop_tx.send(true);
         let _ = self.listener.await;
@@ -176,6 +180,7 @@ struct ProxyEndpoint {
 type PendingUdpResponses = Arc<Mutex<HashMap<u16, oneshot::Sender<Vec<u8>>>>>;
 type PendingStreamResponses = Arc<Mutex<HashMap<u16, oneshot::Sender<Vec<u8>>>>>;
 type BoxedAsyncIo = Box<dyn AsyncIo>;
+pub(crate) type HealthListener = Arc<dyn Fn() + Send + Sync>;
 
 trait AsyncIo: AsyncRead + AsyncWrite + Unpin + Send {}
 
@@ -280,6 +285,7 @@ struct CacheEntry {
 #[derive(Clone)]
 pub struct HealthMonitor {
     states: Arc<Mutex<HashMap<String, HealthRecord>>>,
+    listener: Arc<Mutex<Option<HealthListener>>>,
     enabled: bool,
     failure_threshold: u32,
     recovery_threshold: u32,
@@ -1964,10 +1970,22 @@ impl HealthMonitor {
             .collect();
         Arc::new(Self {
             states: Arc::new(Mutex::new(states)),
+            listener: Arc::new(Mutex::new(None)),
             enabled,
             failure_threshold: failure_threshold.max(1),
             recovery_threshold: recovery_threshold.max(1),
         })
+    }
+
+    fn set_listener(&self, listener: HealthListener) {
+        *self.listener.lock() = Some(listener);
+    }
+
+    fn notify_listener(&self) {
+        let listener = self.listener.lock().clone();
+        if let Some(listener) = listener {
+            listener();
+        }
     }
 
     fn snapshot(&self) -> HealthSnapshot {
@@ -2012,51 +2030,55 @@ impl HealthMonitor {
     }
 
     fn record_success(&self, name: &str, latency: Duration, real_query: bool) {
-        let mut states = self.states.lock();
-        let Some(state) = states.get_mut(name) else {
-            return;
-        };
-        state.last_error = None;
-        state.last_success_at = Some(Utc::now().to_rfc3339());
-        if real_query {
-            state.last_query_success_at = Some(Instant::now());
-        }
-        state.latency_ms = Some(latency.as_millis());
-        state.probe_failure_streak = 0;
-        if !self.enabled {
-            return;
-        }
-        state.failure_streak = 0;
-        if state.healthy {
-            state.recovery_streak = 0;
-        } else {
-            state.recovery_streak += 1;
-            if state.recovery_streak >= self.recovery_threshold {
-                state.healthy = true;
-                state.recovery_streak = 0;
+        {
+            let mut states = self.states.lock();
+            let Some(state) = states.get_mut(name) else {
+                return;
+            };
+            state.last_error = None;
+            state.last_success_at = Some(Utc::now().to_rfc3339());
+            if real_query {
+                state.last_query_success_at = Some(Instant::now());
+            }
+            state.latency_ms = Some(latency.as_millis());
+            state.probe_failure_streak = 0;
+            if self.enabled {
+                state.failure_streak = 0;
+                if state.healthy {
+                    state.recovery_streak = 0;
+                } else {
+                    state.recovery_streak += 1;
+                    if state.recovery_streak >= self.recovery_threshold {
+                        state.healthy = true;
+                        state.recovery_streak = 0;
+                    }
+                }
             }
         }
+        self.notify_listener();
     }
 
     fn record_failure(&self, name: &str, err: impl Into<String>) {
-        let mut states = self.states.lock();
-        let Some(state) = states.get_mut(name) else {
-            return;
-        };
-        state.failure_count += 1;
-        state.last_error = Some(err.into());
-        state.probe_failure_streak = state.probe_failure_streak.saturating_add(1);
-        if !self.enabled {
-            return;
-        }
-        state.recovery_streak = 0;
-        if state.healthy {
-            state.failure_streak += 1;
-            if state.failure_streak >= self.failure_threshold {
-                state.healthy = false;
-                state.failure_streak = 0;
+        {
+            let mut states = self.states.lock();
+            let Some(state) = states.get_mut(name) else {
+                return;
+            };
+            state.failure_count += 1;
+            state.last_error = Some(err.into());
+            state.probe_failure_streak = state.probe_failure_streak.saturating_add(1);
+            if self.enabled {
+                state.recovery_streak = 0;
+                if state.healthy {
+                    state.failure_streak += 1;
+                    if state.failure_streak >= self.failure_threshold {
+                        state.healthy = false;
+                        state.failure_streak = 0;
+                    }
+                }
             }
         }
+        self.notify_listener();
     }
 }
 

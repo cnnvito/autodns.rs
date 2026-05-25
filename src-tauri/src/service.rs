@@ -4,7 +4,7 @@ use crate::desktop::{
 };
 use crate::dns::{
     build_proxy_health, build_upstream_health, mark_proxies_unknown, mark_upstreams_unknown,
-    start_runtime, RunningRuntime,
+    start_runtime, HealthListener, RunningRuntime,
 };
 use crate::logging::{LogBuffer, LogEntry};
 use crate::store::ConfigStore;
@@ -12,12 +12,16 @@ use crate::system_dns;
 use anyhow::{anyhow, Result};
 use chrono::Utc;
 use parking_lot::Mutex;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 
 pub struct DesktopService {
     inner: Mutex<ServiceState>,
     store: Mutex<Option<ConfigStore>>,
     system_dns_adapters: Mutex<SystemDnsAdapterCache>,
+    status_listener: Mutex<Option<HealthListener>>,
     logs: LogBuffer,
     allow_quit: AtomicBool,
 }
@@ -40,6 +44,7 @@ impl DesktopService {
             inner: Mutex::new(ServiceState::default()),
             store: Mutex::new(None),
             system_dns_adapters: Mutex::new(SystemDnsAdapterCache::default()),
+            status_listener: Mutex::new(None),
             logs: LogBuffer::new(1000),
             allow_quit: AtomicBool::new(false),
         }
@@ -67,6 +72,9 @@ impl DesktopService {
         let core = self.store()?.runtime_config()?;
         self.logs.set_level(&core.log.level);
         let runtime = start_runtime(core.clone(), self.logs.clone()).await?;
+        if let Some(listener) = self.status_listener.lock().clone() {
+            runtime.set_health_listener(listener);
+        }
         let status = DesktopStatus {
             running: true,
             config_path: String::new(),
@@ -132,6 +140,14 @@ impl DesktopService {
 
     pub fn set_log_listener(&self, listener: impl Fn(LogEntry) + Send + Sync + 'static) {
         self.logs.set_listener(listener);
+    }
+
+    pub fn set_status_listener(&self, listener: impl Fn() + Send + Sync + 'static) {
+        let listener: HealthListener = Arc::new(listener);
+        *self.status_listener.lock() = Some(listener.clone());
+        if let Some(runtime) = self.inner.lock().runtime.as_ref() {
+            runtime.set_health_listener(listener);
+        }
     }
 
     pub fn clear_dns_cache(&self) -> usize {
@@ -278,6 +294,9 @@ impl DesktopService {
         }
 
         runtime.reload(core.clone(), self.logs.clone()).await?;
+        if let Some(listener) = self.status_listener.lock().clone() {
+            runtime.set_health_listener(listener);
+        }
         self.logs.set_level(&core.log.level);
         let status = DesktopStatus {
             running: true,

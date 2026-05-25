@@ -10,6 +10,11 @@ mod system_dns;
 
 use commands::*;
 use service::DesktopService;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
+use std::time::Duration;
 use tauri::{
     image::Image,
     menu::{Menu, MenuItem, PredefinedMenuItem},
@@ -43,6 +48,12 @@ pub fn run() {
                 .set_log_listener(move |entry| {
                     let _ = app_handle.emit("desktop:log-entry", entry);
                 });
+            let app_handle = app.handle().clone();
+            let pending_status_emit = Arc::new(AtomicBool::new(false));
+            app.state::<DesktopService>().set_status_listener({
+                let pending_status_emit = pending_status_emit.clone();
+                move || schedule_desktop_status(app_handle.clone(), pending_status_emit.clone())
+            });
             if let Err(err) = app.state::<DesktopService>().initialize() {
                 app.state::<DesktopService>()
                     .record_error("initialize local database", &err.to_string());
@@ -238,4 +249,15 @@ pub(crate) fn refresh_tray_state(app: &tauri::AppHandle) {
 pub(crate) fn emit_desktop_status(app: &tauri::AppHandle) {
     let status = app.state::<DesktopService>().status();
     let _ = app.emit("desktop:status", status);
+}
+
+fn schedule_desktop_status(app: tauri::AppHandle, pending: Arc<AtomicBool>) {
+    if pending.swap(true, Ordering::AcqRel) {
+        return;
+    }
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        pending.store(false, Ordering::Release);
+        emit_desktop_status(&app);
+    });
 }
