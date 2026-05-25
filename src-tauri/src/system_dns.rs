@@ -9,7 +9,12 @@ use std::process::Command;
 #[cfg(target_os = "windows")]
 use std::process::Output;
 
-pub fn status(store: &ConfigStore, listen: &str) -> Result<SystemDnsStatus> {
+pub fn status_from_adapters(
+    store: &ConfigStore,
+    listen: &str,
+    mut adapters: Vec<SystemDnsAdapter>,
+    last_error: Option<String>,
+) -> Result<SystemDnsStatus> {
     let mut settings = store.load_system_dns_settings()?;
     let local_servers = local_dns_servers(listen);
     if settings.target_servers.is_empty() {
@@ -17,7 +22,6 @@ pub fn status(store: &ConfigStore, listen: &str) -> Result<SystemDnsStatus> {
     }
 
     let selected: HashSet<String> = settings.selected_adapter_ids.iter().cloned().collect();
-    let mut adapters = list_adapters().unwrap_or_default();
     let mut warnings = Vec::new();
 
     for adapter in &mut adapters {
@@ -54,14 +58,15 @@ pub fn status(store: &ConfigStore, listen: &str) -> Result<SystemDnsStatus> {
         local_servers,
         adapters,
         warnings,
-        last_error: None,
+        last_error,
     })
 }
 
-pub fn save_settings(
-    store: &ConfigStore,
-    mut settings: SystemDnsSettings,
-) -> Result<SystemDnsStatus> {
+pub fn read_adapters() -> Result<Vec<SystemDnsAdapter>> {
+    list_adapters()
+}
+
+pub fn save_settings(store: &ConfigStore, mut settings: SystemDnsSettings) -> Result<()> {
     settings.selected_adapter_ids.sort();
     settings.selected_adapter_ids.dedup();
     settings.target_servers = settings
@@ -70,8 +75,7 @@ pub fn save_settings(
         .map(|server| server.trim().to_string())
         .filter(|server| !server.is_empty())
         .collect();
-    store.save_system_dns_settings(settings)?;
-    status(store, "")
+    store.save_system_dns_settings(settings)
 }
 
 pub fn apply(store: &ConfigStore) -> Result<()> {
@@ -243,7 +247,7 @@ Get-DnsClientServerAddress |
   Select-Object InterfaceIndex, InterfaceAlias, InterfaceGuid, AddressFamily, ServerAddresses |
   ConvertTo-Json -Compress
 "#;
-        let output = Command::new("powershell.exe")
+        let output = powershell_command()
             .args([
                 "-NoProfile",
                 "-NonInteractive",
@@ -263,7 +267,7 @@ Get-DnsClientServerAddress |
             .interface_index
             .ok_or_else(|| anyhow!("Windows adapter is missing InterfaceIndex"))?;
         let script = set_dns_script(interface_index, servers)?;
-        let output = Command::new("powershell.exe")
+        let output = powershell_command()
             .args([
                 "-NoProfile",
                 "-NonInteractive",
@@ -281,6 +285,17 @@ Get-DnsClientServerAddress |
             ));
         }
         Ok(())
+    }
+
+    #[cfg(target_os = "windows")]
+    fn powershell_command() -> Command {
+        use std::os::windows::process::CommandExt;
+
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+        let mut command = Command::new("powershell.exe");
+        command.creation_flags(CREATE_NO_WINDOW);
+        command
     }
 
     #[cfg(target_os = "windows")]

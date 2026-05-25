@@ -1,6 +1,6 @@
 use crate::desktop::{
     ApplyConfigAction, ApplyConfigResult, ConfigDocument, DesktopConfig, DesktopStatus,
-    DnsLookupResult, SystemDnsSettings, SystemDnsStatus,
+    DnsLookupResult, SystemDnsAdapter, SystemDnsSettings, SystemDnsStatus,
 };
 use crate::dns::{
     build_proxy_health, build_upstream_health, mark_proxies_unknown, mark_upstreams_unknown,
@@ -17,6 +17,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 pub struct DesktopService {
     inner: Mutex<ServiceState>,
     store: Mutex<Option<ConfigStore>>,
+    system_dns_adapters: Mutex<SystemDnsAdapterCache>,
     logs: LogBuffer,
     allow_quit: AtomicBool,
 }
@@ -27,11 +28,18 @@ struct ServiceState {
     runtime: Option<RunningRuntime>,
 }
 
+#[derive(Default)]
+struct SystemDnsAdapterCache {
+    adapters: Vec<SystemDnsAdapter>,
+    last_error: Option<String>,
+}
+
 impl DesktopService {
     pub fn new() -> Self {
         Self {
             inner: Mutex::new(ServiceState::default()),
             store: Mutex::new(None),
+            system_dns_adapters: Mutex::new(SystemDnsAdapterCache::default()),
             logs: LogBuffer::new(1000),
             allow_quit: AtomicBool::new(false),
         }
@@ -118,10 +126,6 @@ impl DesktopService {
         self.logs.entries()
     }
 
-    pub fn clear_logs(&self) {
-        self.logs.clear();
-    }
-
     pub fn clear_dns_cache(&self) -> usize {
         let inner = self.inner.lock();
         let Some(runtime) = inner.runtime.as_ref() else {
@@ -147,10 +151,6 @@ impl DesktopService {
     }
 
     pub fn managed_config(&self) -> Result<ConfigDocument> {
-        self.load_config(String::new())
-    }
-
-    pub fn load_config(&self, _path: String) -> Result<ConfigDocument> {
         self.store()?.load_document()
     }
 
@@ -181,13 +181,14 @@ impl DesktopService {
         })
     }
 
-    pub fn system_dns_status(&self) -> Result<SystemDnsStatus> {
+    pub fn system_dns_status(&self, force: bool) -> Result<SystemDnsStatus> {
         let store = self.store()?;
         let listen = store
             .runtime_config()
             .map(|cfg| cfg.server.listen)
             .unwrap_or_default();
-        system_dns::status(&store, &listen)
+        let (adapters, last_error) = self.system_dns_adapters(force);
+        system_dns::status_from_adapters(&store, &listen, adapters, last_error)
     }
 
     pub fn save_system_dns_settings(&self, settings: SystemDnsSettings) -> Result<SystemDnsStatus> {
@@ -197,7 +198,8 @@ impl DesktopService {
             .map(|cfg| cfg.server.listen)
             .unwrap_or_default();
         system_dns::save_settings(&store, settings)?;
-        system_dns::status(&store, &listen)
+        let (adapters, last_error) = self.cached_system_dns_adapters();
+        system_dns::status_from_adapters(&store, &listen, adapters, last_error)
     }
 
     pub fn apply_system_dns(&self) -> Result<()> {
@@ -227,6 +229,29 @@ impl DesktopService {
             .lock()
             .clone()
             .ok_or_else(|| anyhow!("configuration database is not initialized"))
+    }
+
+    fn cached_system_dns_adapters(&self) -> (Vec<SystemDnsAdapter>, Option<String>) {
+        let cache = self.system_dns_adapters.lock();
+        (cache.adapters.clone(), cache.last_error.clone())
+    }
+
+    fn system_dns_adapters(&self, force: bool) -> (Vec<SystemDnsAdapter>, Option<String>) {
+        if force {
+            match system_dns::read_adapters() {
+                Ok(adapters) => {
+                    let mut cache = self.system_dns_adapters.lock();
+                    cache.adapters = adapters;
+                    cache.last_error = None;
+                }
+                Err(err) => {
+                    let mut cache = self.system_dns_adapters.lock();
+                    cache.last_error = Some(err.to_string());
+                }
+            }
+        }
+
+        self.cached_system_dns_adapters()
     }
 
     async fn try_reload(&self, core: crate::config::CoreConfig) -> Result<bool> {

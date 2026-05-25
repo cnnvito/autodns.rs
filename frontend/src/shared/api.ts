@@ -111,8 +111,8 @@ export async function savePreferences(prefs: DesktopPreferences): Promise<Deskto
   return normalizePreferences(await invoke<DesktopPreferences>("save_preferences", { prefs }));
 }
 
-export async function loadSystemDnsStatus(): Promise<SystemDnsStatus> {
-  const status = await invoke<SystemDnsStatus>("system_dns_status").catch(() => emptySystemDnsStatus);
+export async function loadSystemDnsStatus(force = false): Promise<SystemDnsStatus> {
+  const status = await invoke<SystemDnsStatus>("system_dns_status", { force }).catch(() => emptySystemDnsStatus);
   return normalizeSystemDnsStatus(status);
 }
 

@@ -59,10 +59,6 @@ impl LogBuffer {
     pub fn entries(&self) -> Vec<LogEntry> {
         self.inner.lock().iter().cloned().collect()
     }
-
-    pub fn clear(&self) {
-        self.inner.lock().clear();
-    }
 }
 
 impl LogLevel {

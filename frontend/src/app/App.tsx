@@ -43,7 +43,6 @@ const defaultPreferences: DesktopPreferences = {
 
 const STATUS_REFRESH_MS = 1500;
 const LOGS_REFRESH_MS = 3000;
-const SYSTEM_DNS_REFRESH_MS = 15000;
 
 function applyOptimisticSystemDnsSettings(status: SystemDnsStatus, settings: SystemDnsSettings): SystemDnsStatus {
   const selectedAdapterIds = new Set(settings.selectedAdapterIds);
@@ -80,6 +79,7 @@ export function App() {
   const [theme, setTheme] = useState<ThemePreference>(() => loadThemePreference());
   const [preferences, setPreferences] = useState<DesktopPreferences>(defaultPreferences);
   const [systemDns, setSystemDns] = useState<SystemDnsStatus | null>(null);
+  const [activeTab, setActiveTab] = useState("overview");
   const [closePromptOpen, setClosePromptOpen] = useState(false);
   const nextNotificationId = useRef(1);
   const lastRuntimeError = useRef("");
@@ -108,19 +108,19 @@ export function App() {
     setLogs(await loadLogs());
   }
 
-  async function refreshSystemDns() {
-    const nextSystemDns = await loadSystemDnsStatus();
+  async function refreshSystemDns(force = false) {
+    const nextSystemDns = await loadSystemDnsStatus(force);
     if (pendingSystemDnsSave.current === 0) {
       setSystemDns(nextSystemDns);
     }
   }
 
-  async function refresh() {
-    const [nextStatus, nextLogs, nextSystemDns] = await Promise.all([loadStatus(), loadLogs(), loadSystemDnsStatus()]);
+  async function refresh(forceSystemDns = false) {
+    const [nextStatus, nextLogs] = await Promise.all([loadStatus(), loadLogs()]);
     setStatus(nextStatus);
     setLogs(nextLogs);
-    if (pendingSystemDnsSave.current === 0) {
-      setSystemDns(nextSystemDns);
+    if (activeTab === "system-dns") {
+      await refreshSystemDns(forceSystemDns);
     }
   }
 
@@ -132,22 +132,33 @@ export function App() {
     const logsTimer = window.setInterval(() => {
       refreshLogs().catch(() => undefined);
     }, LOGS_REFRESH_MS);
-    const systemDnsTimer = window.setInterval(() => {
-      refreshSystemDns().catch(() => undefined);
-    }, SYSTEM_DNS_REFRESH_MS);
     return () => {
       window.clearInterval(statusTimer);
       window.clearInterval(logsTimer);
-      window.clearInterval(systemDnsTimer);
     };
   }, [notifyError]);
 
   async function bootstrap() {
-    const [doc, prefs] = await Promise.all([loadManagedConfig(), loadPreferences(), refresh()]);
+    const [doc, prefs, nextStatus, nextLogs, nextSystemDns] = await Promise.all([
+      loadManagedConfig(),
+      loadPreferences(),
+      loadStatus(),
+      loadLogs(),
+      loadSystemDnsStatus(true)
+    ]);
     setConfigDoc(doc);
     setSavedConfigDoc(doc);
     setPreferences(prefs);
+    setStatus(nextStatus);
+    setLogs(nextLogs);
+    setSystemDns(nextSystemDns);
   }
+
+  useEffect(() => {
+    if (activeTab === "system-dns" && !systemDns) {
+      refreshSystemDns(false).catch((err: unknown) => notifyError("系统 DNS 状态读取失败", err));
+    }
+  }, [activeTab, notifyError, systemDns]);
 
   useEffect(() => {
     applyThemePreference(theme);
@@ -308,7 +319,7 @@ export function App() {
     setBusy(true);
     try {
       await applySystemDns();
-      setSystemDns(await loadSystemDnsStatus());
+      setSystemDns(await loadSystemDnsStatus(false));
       notify("success", "系统 DNS 已接管");
     } catch (err) {
       notifyError("系统 DNS 接管失败", err);
@@ -321,7 +332,7 @@ export function App() {
     setBusy(true);
     try {
       await restoreSystemDns();
-      setSystemDns(await loadSystemDnsStatus());
+      setSystemDns(await loadSystemDnsStatus(false));
       notify("success", "系统 DNS 已恢复");
     } catch (err) {
       notifyError("系统 DNS 恢复失败", err);
@@ -367,7 +378,7 @@ export function App() {
   return (
     <>
     <main className="shell">
-      <Tabs.Root className="appTabs" defaultValue="overview">
+      <Tabs.Root className="appTabs" value={activeTab} onValueChange={setActiveTab}>
         <div className="topDock">
           <header className="appHeader">
             <div className="brand">
@@ -390,7 +401,7 @@ export function App() {
                 </button>
               </div>
               <div className="toolbarGroup">
-                <button onClick={refresh} disabled={busy}>
+                <button onClick={() => refresh(activeTab === "system-dns")} disabled={busy}>
                   <RefreshCw size={15} />
                   刷新
                 </button>

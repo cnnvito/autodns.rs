@@ -73,11 +73,8 @@ pub fn run() {
             stop_autodns,
             status,
             recent_logs,
-            clear_logs,
             clear_dns_cache,
             lookup_domain,
-            export_logs,
-            load_config,
             managed_config,
             validate_config,
             apply_config,
@@ -88,7 +85,6 @@ pub fn run() {
             apply_system_dns,
             restore_system_dns,
             hide_window,
-            show_window,
             quit_app
         ])
         .run(tauri::generate_context!())
