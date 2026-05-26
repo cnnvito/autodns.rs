@@ -18,7 +18,7 @@ use std::time::Duration;
 use tauri::{
     image::Image,
     menu::{Menu, MenuItem, PredefinedMenuItem},
-    tray::{TrayIcon, TrayIconBuilder},
+    tray::{MouseButton, TrayIcon, TrayIconBuilder, TrayIconEvent},
     Emitter, Manager, WindowEvent, Wry,
 };
 
@@ -144,13 +144,27 @@ fn setup_tray(app: &mut tauri::App) -> tauri::Result<()> {
     let icon = Image::from_bytes(include_bytes!("../icons/tray-icon-windows.png"))?;
     #[cfg(not(target_os = "windows"))]
     let icon = Image::from_bytes(include_bytes!("../icons/tray-icon.png"))?;
+    let tray_app = app.handle().clone();
 
     let tray = TrayIconBuilder::with_id("autodns")
         .icon(icon)
         .icon_as_template(cfg!(target_os = "macos"))
         .tooltip("已停止")
         .menu(&menu)
-        .show_menu_on_left_click(true)
+        .show_menu_on_left_click(!cfg!(target_os = "windows"))
+        .on_tray_icon_event(move |_tray, event| {
+            if cfg!(target_os = "windows")
+                && matches!(
+                    event,
+                    TrayIconEvent::DoubleClick {
+                        button: MouseButton::Left,
+                        ..
+                    }
+                )
+            {
+                let _ = reveal_main_window(&tray_app);
+            }
+        })
         .on_menu_event(|app, event| match event.id().as_ref() {
             TRAY_SHOW => {
                 if let Some(window) = app.get_webview_window("main") {
