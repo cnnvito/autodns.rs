@@ -163,13 +163,13 @@ export function UpstreamsPage({ doc, onChange }: ConfigPageProps) {
         <header>
           <div>
             <h2>上游 DNS</h2>
-            <p>按排序从上到下解析；拖动左侧把手调整。</p>
+            <p>按列表顺序解析。</p>
           </div>
           <button className="iconTextButton" onClick={addUpstream}><Plus size={15} /> 新增上游</button>
         </header>
         <div className="logicNote">
           <strong>切换逻辑</strong>
-          <span>按顺序请求：拿到答案就返回；超时、网络错误、SERVFAIL、REFUSED、NXDOMAIN 或无答案会继续下一个。全部没有答案时，才按设置回退系统 DNS。</span>
+          <span>拿到答案即返回；无答案或出错时继续下一个，全部失败后按设置回退系统 DNS。</span>
         </div>
         <div className="dataTable">
           <div className="upstreamHeaderRow">

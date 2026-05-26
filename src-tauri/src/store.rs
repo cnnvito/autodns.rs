@@ -11,7 +11,6 @@ use rusqlite::{params, Connection, OptionalExtension};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
-use url::Url;
 
 const CONFIG_DOCUMENT_PATH: &str = "local://autodns/config";
 
@@ -26,14 +25,6 @@ struct ParsedRoute {
     match_type: String,
     domain: String,
     upstreams: Vec<String>,
-}
-
-#[derive(Default)]
-struct EndpointParts {
-    protocol: String,
-    host: String,
-    port: String,
-    path: String,
 }
 
 impl ConfigStore {
@@ -170,7 +161,6 @@ fn migrate(conn: &Connection) -> Result<()> {
         CREATE TABLE IF NOT EXISTS proxies (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT NOT NULL UNIQUE,
-            endpoint TEXT NOT NULL,
             protocol TEXT NOT NULL DEFAULT '',
             host TEXT NOT NULL DEFAULT '',
             port INTEGER,
@@ -184,7 +174,6 @@ fn migrate(conn: &Connection) -> Result<()> {
         CREATE TABLE IF NOT EXISTS upstreams (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT NOT NULL UNIQUE,
-            endpoint TEXT NOT NULL,
             protocol TEXT NOT NULL DEFAULT '',
             host TEXT NOT NULL DEFAULT '',
             port INTEGER,
@@ -258,6 +247,8 @@ fn migrate(conn: &Connection) -> Result<()> {
     add_column_if_missing(conn, "upstreams", "host", "TEXT NOT NULL DEFAULT ''")?;
     add_column_if_missing(conn, "upstreams", "port", "INTEGER")?;
     add_column_if_missing(conn, "upstreams", "path", "TEXT NOT NULL DEFAULT ''")?;
+    drop_column_if_exists(conn, "proxies", "endpoint")?;
+    drop_column_if_exists(conn, "upstreams", "endpoint")?;
     conn.execute(
         r#"
         INSERT OR IGNORE INTO system_dns_settings (id, enabled, target_servers, selected_adapter_ids)
@@ -306,6 +297,19 @@ fn add_column_if_missing(
         [],
     )
     .with_context(|| format!("add column {table}.{column}"))?;
+    Ok(())
+}
+
+fn drop_column_if_exists(conn: &Connection, table: &str, column: &str) -> Result<()> {
+    let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
+    let rows = stmt.query_map([], |row| row.get::<_, String>(1))?;
+    for name in rows {
+        if name? == column {
+            conn.execute(&format!("ALTER TABLE {table} DROP COLUMN {column}"), [])
+                .with_context(|| format!("drop column {table}.{column}"))?;
+            return Ok(());
+        }
+    }
     Ok(())
 }
 
@@ -364,15 +368,13 @@ fn replace_config(conn: &mut Connection, config: DesktopConfig) -> Result<()> {
     .context("save app settings")?;
 
     for (index, proxy) in config.resolver.proxies.into_iter().enumerate() {
-        let endpoint = proxy_endpoint_from_fields(&proxy);
         tx.execute(
             r#"
-            INSERT INTO proxies (name, endpoint, protocol, host, port, username, password, sort_order, enabled)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)
+            INSERT INTO proxies (name, protocol, host, port, username, password, sort_order, enabled)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 1)
             "#,
             params![
                 proxy.name,
-                endpoint,
                 proxy.protocol,
                 proxy.host,
                 port_to_i64(&proxy.port)?,
@@ -385,15 +387,13 @@ fn replace_config(conn: &mut Connection, config: DesktopConfig) -> Result<()> {
     }
 
     for (index, upstream) in config.resolver.upstreams.into_iter().enumerate() {
-        let endpoint = upstream_endpoint_from_fields(&upstream);
         tx.execute(
             r#"
-            INSERT INTO upstreams (name, endpoint, protocol, host, port, path, server_name, proxy_name, sort_order, enabled)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+            INSERT INTO upstreams (name, protocol, host, port, path, server_name, proxy_name, sort_order, enabled)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)
             "#,
             params![
                 upstream.name,
-                endpoint,
                 upstream.protocol,
                 upstream.host,
                 port_to_i64(&upstream.port)?,
@@ -568,34 +568,21 @@ fn load_settings(conn: &Connection) -> Result<DesktopConfig> {
 fn load_desktop_proxies(conn: &Connection) -> Result<Vec<crate::desktop::DesktopProxyConfig>> {
     let mut stmt = conn.prepare(
         r#"
-        SELECT name, endpoint, protocol, host, port, username, password
+        SELECT name, protocol, host, port, username, password
         FROM proxies
         WHERE deleted_at IS NULL
         ORDER BY sort_order, id
         "#,
     )?;
     let rows = stmt.query_map([], |row| {
-        let endpoint: String = row.get(1)?;
-        let mut parts = parse_endpoint_parts_lossy(&endpoint);
-        let protocol: String = row.get(2)?;
-        let host: String = row.get(3)?;
-        let port: Option<i64> = row.get(4)?;
-        if !protocol.is_empty() {
-            parts.protocol = protocol;
-        }
-        if !host.is_empty() {
-            parts.host = host;
-        }
-        if let Some(port) = port {
-            parts.port = port.to_string();
-        }
+        let port: Option<i64> = row.get(3)?;
         Ok(crate::desktop::DesktopProxyConfig {
             name: row.get(0)?,
-            protocol: parts.protocol,
-            host: parts.host,
-            port: parts.port,
-            username: row.get(5)?,
-            password: row.get(6)?,
+            protocol: row.get(1)?,
+            host: row.get(2)?,
+            port: port.map(|port| port.to_string()).unwrap_or_default(),
+            username: row.get(4)?,
+            password: row.get(5)?,
         })
     })?;
     collect_rows(rows)
@@ -604,39 +591,22 @@ fn load_desktop_proxies(conn: &Connection) -> Result<Vec<crate::desktop::Desktop
 fn load_desktop_upstreams(conn: &Connection) -> Result<Vec<crate::desktop::DesktopUpstreamConfig>> {
     let mut stmt = conn.prepare(
         r#"
-        SELECT name, endpoint, protocol, host, port, path, server_name, proxy_name
+        SELECT name, protocol, host, port, path, server_name, proxy_name
         FROM upstreams
         WHERE deleted_at IS NULL
         ORDER BY sort_order, id
         "#,
     )?;
     let rows = stmt.query_map([], |row| {
-        let endpoint: String = row.get(1)?;
-        let mut parts = parse_endpoint_parts_lossy(&endpoint);
-        let protocol: String = row.get(2)?;
-        let host: String = row.get(3)?;
-        let port: Option<i64> = row.get(4)?;
-        let path: String = row.get(5)?;
-        if !protocol.is_empty() {
-            parts.protocol = protocol;
-        }
-        if !host.is_empty() {
-            parts.host = host;
-        }
-        if let Some(port) = port {
-            parts.port = port.to_string();
-        }
-        if !path.is_empty() {
-            parts.path = path;
-        }
+        let port: Option<i64> = row.get(3)?;
         Ok(crate::desktop::DesktopUpstreamConfig {
             name: row.get(0)?,
-            protocol: parts.protocol,
-            host: parts.host,
-            port: parts.port,
-            path: parts.path,
-            server_name: row.get(6)?,
-            proxy: row.get(7)?,
+            protocol: row.get(1)?,
+            host: row.get(2)?,
+            port: port.map(|port| port.to_string()).unwrap_or_default(),
+            path: row.get(4)?,
+            server_name: row.get(5)?,
+            proxy: row.get(6)?,
         })
     })?;
     collect_rows(rows)
@@ -804,80 +774,6 @@ fn parse_host_rule(raw: &str) -> Result<(String, String)> {
         return Err(anyhow!("host rule must contain '='"));
     };
     Ok((domain.trim().to_string(), ips.trim().to_string()))
-}
-
-fn parse_endpoint_parts_lossy(raw: &str) -> EndpointParts {
-    let Ok(url) = Url::parse(raw) else {
-        return EndpointParts {
-            protocol: String::new(),
-            host: raw.to_string(),
-            port: String::new(),
-            path: String::new(),
-        };
-    };
-    EndpointParts {
-        protocol: url.scheme().to_string(),
-        host: url.host_str().unwrap_or_default().to_string(),
-        port: url.port().map(|port| port.to_string()).unwrap_or_default(),
-        path: if url.path() == "/" {
-            String::new()
-        } else {
-            url.path().to_string()
-        },
-    }
-}
-
-fn upstream_endpoint_from_fields(upstream: &crate::desktop::DesktopUpstreamConfig) -> String {
-    let protocol = if upstream.protocol.trim().is_empty() {
-        "udp"
-    } else {
-        upstream.protocol.trim()
-    };
-    let address = endpoint_address(upstream.host.trim(), upstream.port.trim());
-    if protocol == "http" || protocol == "https" {
-        format!(
-            "{protocol}://{address}{}",
-            normalize_doh_path(&upstream.path)
-        )
-    } else {
-        format!("{protocol}://{address}")
-    }
-}
-
-fn proxy_endpoint_from_fields(proxy: &crate::desktop::DesktopProxyConfig) -> String {
-    let protocol = if proxy.protocol.trim().is_empty() {
-        "socks5"
-    } else {
-        proxy.protocol.trim()
-    };
-    format!(
-        "{protocol}://{}",
-        endpoint_address(proxy.host.trim(), proxy.port.trim())
-    )
-}
-
-fn endpoint_address(host: &str, port: &str) -> String {
-    let host = if host.contains(':') && !host.starts_with('[') {
-        format!("[{host}]")
-    } else {
-        host.to_string()
-    };
-    if port.is_empty() {
-        host
-    } else {
-        format!("{host}:{port}")
-    }
-}
-
-fn normalize_doh_path(path: &str) -> String {
-    let value = path.trim();
-    if value.is_empty() || value == "/" {
-        "/dns-query".into()
-    } else if value.starts_with('/') {
-        value.into()
-    } else {
-        format!("/{value}")
-    }
 }
 
 fn port_to_i64(port: &str) -> Result<Option<i64>> {

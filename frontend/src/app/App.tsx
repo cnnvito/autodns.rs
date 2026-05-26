@@ -17,6 +17,7 @@ import {
   saveConfig,
   savePreferences,
   saveSystemDnsSettings,
+  showMainWindow,
   startAutodns,
   stopAutodns,
   validateConfig
@@ -75,12 +76,30 @@ export function App() {
   const [theme, setTheme] = useState<ThemePreference>(() => loadThemePreference());
   const [preferences, setPreferences] = useState<DesktopPreferences>(defaultPreferences);
   const [systemDns, setSystemDns] = useState<SystemDnsStatus | null>(null);
+  const [systemDnsLoading, setSystemDnsLoading] = useState(false);
   const [activeTab, setActiveTab] = useState("overview");
   const [closePromptOpen, setClosePromptOpen] = useState(false);
   const nextNotificationId = useRef(1);
   const lastRuntimeError = useRef("");
   const pendingSystemDnsSave = useRef(0);
   const lastSystemDnsSaveId = useRef(0);
+  const systemDnsLoadingRef = useRef(false);
+  const systemDnsAdaptersRequested = useRef(false);
+
+  useEffect(() => {
+    let secondFrame: number | undefined;
+    const firstFrame = window.requestAnimationFrame(() => {
+      secondFrame = window.requestAnimationFrame(() => {
+        void showMainWindow().catch(() => undefined);
+      });
+    });
+    return () => {
+      window.cancelAnimationFrame(firstFrame);
+      if (secondFrame !== undefined) {
+        window.cancelAnimationFrame(secondFrame);
+      }
+    };
+  }, []);
 
   const dismissNotification = useCallback((id: number) => {
     setNotifications((items) => items.filter((item) => item.id !== id));
@@ -97,9 +116,19 @@ export function App() {
   }, [notify]);
 
   async function refreshSystemDns(force = false) {
-    const nextSystemDns = await loadSystemDnsStatus(force);
-    if (pendingSystemDnsSave.current === 0) {
-      setSystemDns(nextSystemDns);
+    if (systemDnsLoadingRef.current) {
+      return;
+    }
+    systemDnsLoadingRef.current = true;
+    setSystemDnsLoading(true);
+    try {
+      const nextSystemDns = await loadSystemDnsStatus(force);
+      if (pendingSystemDnsSave.current === 0) {
+        setSystemDns(nextSystemDns);
+      }
+    } finally {
+      systemDnsLoadingRef.current = false;
+      setSystemDnsLoading(false);
     }
   }
 
@@ -128,7 +157,6 @@ export function App() {
     setPreferences(prefs);
     setStatus(nextStatus);
     setSystemDns(nextSystemDns);
-    refreshSystemDns(true).catch((err: unknown) => notifyError("系统 DNS 状态读取失败", err));
   }
 
   useEffect(() => {
@@ -144,10 +172,11 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    if (activeTab === "system-dns" && !systemDns) {
-      refreshSystemDns(false).catch((err: unknown) => notifyError("系统 DNS 状态读取失败", err));
+    if (activeTab === "system-dns" && !systemDnsAdaptersRequested.current) {
+      systemDnsAdaptersRequested.current = true;
+      refreshSystemDns(true).catch((err: unknown) => notifyError("系统 DNS 状态读取失败", err));
     }
-  }, [activeTab, notifyError, systemDns]);
+  }, [activeTab, notifyError]);
 
   useEffect(() => {
     applyThemePreference(theme);
@@ -348,7 +377,7 @@ export function App() {
     setClosePromptOpen(false);
     try {
       await hideWindow();
-      notify("info", "窗口已隐藏", "再次启动应用会恢复窗口。");
+      notify("info", "窗口已隐藏", "可从托盘重新打开。");
     } catch (err) {
       notifyError("隐藏窗口失败", err);
     }
@@ -460,6 +489,7 @@ export function App() {
           <Tabs.Content className="mainTabsContent" value="system-dns">
             <SystemDnsPage
               systemDns={systemDns}
+              loading={systemDnsLoading}
               running={running}
               onSystemDnsSettingsChange={handleSystemDnsSettingsChange}
               onApplySystemDns={handleApplySystemDns}
@@ -486,12 +516,11 @@ export function App() {
     </main>
     {closePromptOpen ? (
       <div className="modalLayer" role="presentation">
-        <section className="confirmDialog" role="dialog" aria-modal="true" aria-labelledby="close-dialog-title">
+        <section className="confirmDialog closeDialog" role="dialog" aria-modal="true" aria-labelledby="close-dialog-title">
           <header>
             <h2 id="close-dialog-title">关闭 autodns</h2>
-            <p>选择本次关闭窗口后的处理方式。</p>
           </header>
-          <div className="confirmActions">
+          <div className="confirmActions closeActions">
             <button onClick={() => setClosePromptOpen(false)}>取消</button>
             <button onClick={handleHideToTray}>隐藏窗口</button>
             <button className="primary" onClick={handleQuitApp}>退出程序</button>

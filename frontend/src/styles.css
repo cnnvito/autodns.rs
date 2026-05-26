@@ -887,6 +887,11 @@ h2 {
   color: var(--success);
 }
 
+.systemDnsState.loading {
+  background: var(--warning-bg);
+  color: var(--warning);
+}
+
 .systemDnsSummary {
   display: grid;
   grid-template-columns: 0.8fr 1.4fr 0.8fr;
@@ -1296,7 +1301,7 @@ h2 {
 }
 
 .lookupPanel {
-  max-width: 920px;
+  width: 100%;
 }
 
 .lookupForm {
@@ -1683,6 +1688,34 @@ h2 {
   margin-top: 14px;
 }
 
+.adapterLoading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  min-height: 58px;
+  border: 1px dashed var(--border-strong);
+  border-radius: 6px;
+  background: var(--surface-soft);
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.loadingSpinner {
+  width: 16px;
+  height: 16px;
+  border: 2px solid var(--border-strong);
+  border-top-color: var(--accent);
+  border-radius: 999px;
+  animation: spin 760ms linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .emptyList {
   border: 1px dashed var(--border-strong);
   border-radius: 6px;
@@ -1878,6 +1911,21 @@ h2 {
   justify-content: flex-end;
   gap: 8px;
   margin-top: 18px;
+}
+
+.closeDialog {
+  width: min(360px, 100%);
+}
+
+.closeActions {
+  gap: 6px;
+  margin-top: 14px;
+}
+
+.closeActions button {
+  min-height: 32px;
+  padding: 0 10px;
+  font-size: 13px;
 }
 
 .confirmSummary {

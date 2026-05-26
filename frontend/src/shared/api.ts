@@ -131,6 +131,10 @@ export async function hideWindow(): Promise<void> {
   await invoke("hide_window");
 }
 
+export async function showMainWindow(): Promise<void> {
+  await invoke("show_main_window");
+}
+
 export async function quitApp(): Promise<void> {
   await invoke("quit_app");
 }

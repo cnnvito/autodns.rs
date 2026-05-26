@@ -38,10 +38,16 @@ struct TrayState {
     clear_cache: MenuItem<Wry>,
 }
 
+#[derive(Default)]
+pub(crate) struct WindowReadyState {
+    ready: AtomicBool,
+}
+
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(DesktopService::new())
+        .manage(WindowReadyState::default())
         .setup(|app| {
             let app_handle = app.handle().clone();
             let pending_status_emit = Arc::new(AtomicBool::new(false));
@@ -49,6 +55,7 @@ pub fn run() {
                 let pending_status_emit = pending_status_emit.clone();
                 move || schedule_desktop_status(app_handle.clone(), pending_status_emit.clone())
             });
+            schedule_startup_window_fallback(app.handle().clone());
             if let Err(err) = app.state::<DesktopService>().initialize() {
                 app.state::<DesktopService>()
                     .record_error("initialize local database", &err.to_string());
@@ -94,6 +101,7 @@ pub fn run() {
             save_system_dns_settings,
             apply_system_dns,
             restore_system_dns,
+            show_main_window,
             hide_window,
             quit_app
         ])
@@ -245,6 +253,17 @@ pub(crate) fn emit_desktop_status(app: &tauri::AppHandle) {
     let _ = app.emit("desktop:status", status);
 }
 
+pub(crate) fn reveal_main_window(app: &tauri::AppHandle) -> tauri::Result<()> {
+    app.state::<WindowReadyState>()
+        .ready
+        .store(true, Ordering::SeqCst);
+    if let Some(window) = app.get_webview_window("main") {
+        window.show()?;
+        window.set_focus()?;
+    }
+    Ok(())
+}
+
 fn schedule_desktop_status(app: tauri::AppHandle, pending: Arc<AtomicBool>) {
     if pending.swap(true, Ordering::AcqRel) {
         return;
@@ -253,5 +272,19 @@ fn schedule_desktop_status(app: tauri::AppHandle, pending: Arc<AtomicBool>) {
         tokio::time::sleep(Duration::from_millis(200)).await;
         pending.store(false, Ordering::Release);
         emit_desktop_status(&app);
+    });
+}
+
+fn schedule_startup_window_fallback(app: tauri::AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(Duration::from_secs(8)).await;
+        if app
+            .state::<WindowReadyState>()
+            .ready
+            .load(Ordering::SeqCst)
+        {
+            return;
+        }
+        let _ = reveal_main_window(&app);
     });
 }

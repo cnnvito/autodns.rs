@@ -307,7 +307,7 @@ fn desktop_proxy_from_core(item: &CoreProxyConfig) -> DesktopProxyConfig {
     }
 }
 
-fn upstream_endpoint_from_desktop(item: &DesktopUpstreamConfig) -> String {
+pub(crate) fn upstream_endpoint_from_desktop(item: &DesktopUpstreamConfig) -> String {
     let protocol = if item.protocol.trim().is_empty() {
         "udp"
     } else {
@@ -324,17 +324,21 @@ fn upstream_endpoint_from_desktop(item: &DesktopUpstreamConfig) -> String {
     }
 }
 
-fn proxy_endpoint_from_desktop(item: &DesktopProxyConfig) -> String {
+pub(crate) fn proxy_endpoint_from_desktop(item: &DesktopProxyConfig) -> String {
+    let endpoint = proxy_endpoint_base_from_desktop(item);
+    proxy_endpoint_with_auth(&endpoint, &item.username, &item.password)
+}
+
+fn proxy_endpoint_base_from_desktop(item: &DesktopProxyConfig) -> String {
     let protocol = if item.protocol.trim().is_empty() {
         "socks5"
     } else {
         item.protocol.trim()
     };
-    let endpoint = format!(
+    format!(
         "{protocol}://{}",
         endpoint_address(item.host.trim(), item.port.trim())
-    );
-    proxy_endpoint_with_auth(&endpoint, &item.username, &item.password)
+    )
 }
 
 fn endpoint_address(host: &str, port: &str) -> String {

@@ -157,7 +157,7 @@ export function SettingsPage({
         <header>
           <div>
             <h2>服务</h2>
-            <p>修改监听地址或协议后，应用配置会重启运行时。</p>
+            <p>保存监听或协议变更时会重启服务。</p>
           </div>
         </header>
         <div className="settingsGrid">

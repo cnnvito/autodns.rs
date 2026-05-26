@@ -5,6 +5,7 @@ import { SwitchField } from "../shared/ui";
 
 type SystemDnsPageProps = {
   systemDns: SystemDnsStatus | null;
+  loading: boolean;
   running: boolean;
   onSystemDnsSettingsChange: (settings: SystemDnsSettings) => void;
   onApplySystemDns: () => void;
@@ -13,6 +14,7 @@ type SystemDnsPageProps = {
 
 export function SystemDnsPage({
   systemDns,
+  loading,
   running,
   onSystemDnsSettingsChange,
   onApplySystemDns,
@@ -59,9 +61,11 @@ export function SystemDnsPage({
       <section className="pageStack">
         <section className="panel systemDnsHero">
           <div>
-            <span className={systemDnsEnabled ? "systemDnsState active" : "systemDnsState"}>{systemDnsEnabled ? "已允许接管" : "默认关闭"}</span>
+            <span className={loading ? "systemDnsState loading" : systemDnsEnabled ? "systemDnsState active" : "systemDnsState"}>
+              {loading ? "正在读取接口" : systemDnsEnabled ? "已允许接管" : "默认关闭"}
+            </span>
             <h2>系统 DNS 接管</h2>
-            <p>{running ? "只修改选中的网络接口；执行前会再次确认，恢复时优先使用保存的原始 DNS。" : "启动本地 DNS 服务后才能接管系统 DNS。"}</p>
+            <p>{running ? "只修改选中的网络接口，恢复时优先使用保存的原始 DNS。" : "启动本地 DNS 服务后才能接管系统 DNS。"}</p>
           </div>
           <SwitchField checked={systemDnsEnabled} onChange={(checked) => updateSystemDns({ enabled: checked })} disabled={!canManageSystemDns}>
             允许接管
@@ -98,10 +102,16 @@ export function SystemDnsPage({
           <header>
             <div>
               <h2>网络接口</h2>
-              <p>Windows 使用稳定接口 ID；macOS 使用网络服务名。</p>
+              <p>{loading ? "正在读取网络接口。" : "选择需要接管的网络接口。"}</p>
             </div>
           </header>
           <div className="adapterList">
+            {loading ? (
+              <div className="adapterLoading" role="status" aria-live="polite">
+                <span className="loadingSpinner" aria-hidden="true" />
+                <span>正在加载网络接口</span>
+              </div>
+            ) : null}
             {(systemDns?.adapters ?? []).map((adapter) => {
               const selected = selectedAdapterIds.has(adapter.id);
               return (
@@ -129,14 +139,14 @@ export function SystemDnsPage({
               </div>
               );
             })}
-            {systemDns && systemDns.adapters.length === 0 ? <div className="emptyList">正在读取网络接口；也可以点击右上角刷新。</div> : null}
-            {!systemDns ? <div className="emptyList">正在读取网络接口。</div> : null}
+            {systemDns && systemDns.adapters.length === 0 && !loading ? <div className="emptyList">未读取到网络接口。</div> : null}
+            {!systemDns && !loading ? <div className="emptyList">还没有系统 DNS 状态。</div> : null}
           </div>
           <div className="dnsActions">
-            <button onClick={() => setDnsConfirm("restore")} disabled={!adaptersLoaded || !systemDns?.supported || (!managedAdapters.length && !selectedAdapters.length)}>
+            <button onClick={() => setDnsConfirm("restore")} disabled={loading || !adaptersLoaded || !systemDns?.supported || (!managedAdapters.length && !selectedAdapters.length)}>
               恢复原 DNS
             </button>
-            <button className="primary" onClick={() => setDnsConfirm("apply")} disabled={!adaptersLoaded || !canManageSystemDns || !systemDnsEnabled || !systemDns?.settings.selectedAdapterIds.length}>
+            <button className="primary" onClick={() => setDnsConfirm("apply")} disabled={loading || !adaptersLoaded || !canManageSystemDns || !systemDnsEnabled || !systemDns?.settings.selectedAdapterIds.length}>
               接管选中接口
             </button>
           </div>
@@ -151,7 +161,7 @@ export function SystemDnsPage({
               <p>
                 {dnsConfirm === "apply"
                   ? "即将修改选中网络接口的 DNS 服务器。这个操作可能需要管理员权限。"
-                  : "即将把已接管接口恢复到保存的原始 DNS；没有原始记录时会恢复为自动获取。"}
+                  : "将恢复已接管接口的 DNS 设置；没有原始记录时恢复为自动获取。"}
               </p>
             </header>
             <div className="confirmSummary">
@@ -175,7 +185,7 @@ export function SystemDnsPage({
             </div>
             <div className="confirmActions">
               <button onClick={() => setDnsConfirm(null)}>取消</button>
-              <button className="primary" onClick={confirmSystemDnsAction} disabled={!adaptersLoaded || !confirmAdapters.length || (dnsConfirm === "apply" && !running)}>
+              <button className="primary" onClick={confirmSystemDnsAction} disabled={loading || !adaptersLoaded || !confirmAdapters.length || (dnsConfirm === "apply" && !running)}>
                 确认执行
               </button>
             </div>

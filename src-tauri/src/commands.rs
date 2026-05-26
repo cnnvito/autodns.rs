@@ -149,6 +149,11 @@ pub fn hide_window(app: AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
+pub fn show_main_window(app: AppHandle) -> Result<(), String> {
+    crate::reveal_main_window(&app).map_err(|err| err.to_string())
+}
+
+#[tauri::command]
 pub fn quit_app(app: AppHandle, service: State<'_, DesktopService>) {
     service.set_allow_quit();
     app.exit(0);
