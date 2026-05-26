@@ -31,7 +31,6 @@ pub struct DesktopResolverConfig {
     pub routes: Vec<String>,
     pub route_statuses: Vec<DesktopRouteStatus>,
     pub timeout: String,
-    pub fallback_system_dns: bool,
     pub ipv6_enabled: bool,
 }
 

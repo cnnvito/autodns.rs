@@ -65,7 +65,6 @@ export type ResolverConfig = {
   routes: string[];
   routeStatuses: RouteStatus[];
   timeout: string;
-  fallbackSystemDNS: boolean;
   ipv6Enabled: boolean;
 };
 

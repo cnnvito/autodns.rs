@@ -278,11 +278,7 @@ fn schedule_desktop_status(app: tauri::AppHandle, pending: Arc<AtomicBool>) {
 fn schedule_startup_window_fallback(app: tauri::AppHandle) {
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(Duration::from_secs(8)).await;
-        if app
-            .state::<WindowReadyState>()
-            .ready
-            .load(Ordering::SeqCst)
-        {
+        if app.state::<WindowReadyState>().ready.load(Ordering::SeqCst) {
             return;
         }
         let _ = reveal_main_window(&app);

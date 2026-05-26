@@ -151,7 +151,6 @@ pub(crate) struct Resolver {
     routes: Routes,
     cache: DnsCache,
     clients: HashMap<String, UpstreamClient>,
-    fallback: Option<UpstreamClient>,
     health: Arc<HealthMonitor>,
     timeout: Option<Duration>,
     ipv6_enabled: bool,
@@ -514,22 +513,6 @@ fn build_resolver(cfg: &CoreConfig, logs: LogBuffer) -> Result<Resolver> {
         );
     }
 
-    let fallback = if cfg.resolver.fallback_system_dns {
-        system_dns_endpoint().map(|endpoint| UpstreamClient {
-            name: "system".into(),
-            endpoint,
-            proxy: None,
-            http: None,
-            udp: Arc::new(Mutex::new(None)),
-            socks5_udp: Arc::new(Mutex::new(None)),
-            tcp: Arc::new(Mutex::new(None)),
-            dot: Arc::new(Mutex::new(None)),
-            doq: Arc::new(Mutex::new(None)),
-        })
-    } else {
-        None
-    };
-
     let health = HealthMonitor::new(
         cfg.healthcheck.enabled,
         cfg.healthcheck.failure_threshold,
@@ -556,7 +539,6 @@ fn build_resolver(cfg: &CoreConfig, logs: LogBuffer) -> Result<Resolver> {
         )?,
         cache: DnsCache::new(cfg),
         clients,
-        fallback,
         health,
         timeout: if cfg.resolver.timeout.is_empty() {
             None
@@ -1187,77 +1169,6 @@ impl Resolver {
                         );
                     }
                     self.health.record_failure(name, err.to_string());
-                }
-            }
-        }
-
-        if let Some(client) = &self.fallback {
-            let started = Instant::now();
-            if debug_logs {
-                self.logs.push(
-                    "debug",
-                    format!(
-                        "dns query {qname} {qtype} route {route_id} via fallback {}://{}",
-                        client.endpoint.scheme, client.endpoint.address
-                    ),
-                );
-            }
-            match client.exchange(&req, self.timeout).await {
-                Ok(resp) => {
-                    let resp = self.filter_response(resp);
-                    match classify(&resp) {
-                        ResponseClass::Answer => {
-                            self.cache.set(key.clone(), &resp, false);
-                            if debug_logs {
-                                let duration_ms = started.elapsed().as_millis();
-                                let rcode_label = response_code_label(rcode(&resp));
-                                let answers = answer_count(&resp).unwrap_or(0);
-                                self.logs.push(
-                                    "debug",
-                                    format!(
-                                        "dns query {qname} {qtype} fallback answered in {duration_ms}ms rcode {rcode_label} answers {answers}"
-                                    ),
-                                );
-                            }
-                            return Ok(resp);
-                        }
-                        ResponseClass::Negative => {
-                            if debug_logs {
-                                let duration_ms = started.elapsed().as_millis();
-                                let rcode_label = response_code_label(rcode(&resp));
-                                self.logs.push(
-                                    "debug",
-                                    format!(
-                                        "dns query {qname} {qtype} fallback returned no answer in {duration_ms}ms rcode {rcode_label}"
-                                    ),
-                                );
-                            }
-                            last_negative = Some(resp);
-                        }
-                        ResponseClass::Retry => {
-                            if debug_logs {
-                                let duration_ms = started.elapsed().as_millis();
-                                let rcode_label = response_code_label(rcode(&resp));
-                                self.logs.push(
-                                    "debug",
-                                    format!(
-                                        "dns query {qname} {qtype} fallback returned retryable response in {duration_ms}ms rcode {rcode_label}"
-                                    ),
-                                );
-                            }
-                        }
-                    }
-                }
-                Err(err) => {
-                    if debug_logs {
-                        let duration_ms = started.elapsed().as_millis();
-                        self.logs.push(
-                            "debug",
-                            format!(
-                                "dns query {qname} {qtype} fallback failed in {duration_ms}ms: {err}"
-                            ),
-                        );
-                    }
                 }
             }
         }
@@ -3035,33 +2946,6 @@ fn normalize_domain(domain: &str) -> Result<String> {
 fn normalize_domain_lossy(domain: &str) -> String {
     normalize_domain(domain)
         .unwrap_or_else(|_| domain.trim().trim_end_matches('.').to_ascii_lowercase())
-}
-
-fn system_dns_endpoint() -> Option<Endpoint> {
-    #[cfg(unix)]
-    {
-        if let Ok(data) = std::fs::read_to_string("/etc/resolv.conf") {
-            for line in data.lines() {
-                let mut parts = line.split_whitespace();
-                if parts.next() == Some("nameserver") {
-                    if let Some(addr) = parts.next() {
-                        return Some(Endpoint {
-                            scheme: "udp".into(),
-                            address: format!("{addr}:53"),
-                            url: String::new(),
-                            server_name: addr.to_string(),
-                        });
-                    }
-                }
-            }
-        }
-    }
-    Some(Endpoint {
-        scheme: "udp".into(),
-        address: "1.1.1.1:53".into(),
-        url: String::new(),
-        server_name: "1.1.1.1".into(),
-    })
 }
 
 #[cfg(test)]

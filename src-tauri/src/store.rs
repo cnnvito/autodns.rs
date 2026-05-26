@@ -139,7 +139,6 @@ fn migrate(conn: &Connection) -> Result<()> {
             server_path TEXT NOT NULL DEFAULT '',
             default_proxy TEXT NOT NULL DEFAULT '',
             resolver_timeout TEXT NOT NULL DEFAULT '',
-            fallback_system_dns INTEGER NOT NULL DEFAULT 0,
             ipv6_enabled INTEGER NOT NULL DEFAULT 1,
             cache_enabled INTEGER NOT NULL DEFAULT 1,
             cache_max_entries INTEGER NOT NULL DEFAULT 10000,
@@ -247,6 +246,7 @@ fn migrate(conn: &Connection) -> Result<()> {
     add_column_if_missing(conn, "upstreams", "host", "TEXT NOT NULL DEFAULT ''")?;
     add_column_if_missing(conn, "upstreams", "port", "INTEGER")?;
     add_column_if_missing(conn, "upstreams", "path", "TEXT NOT NULL DEFAULT ''")?;
+    drop_column_if_exists(conn, "app_settings", "fallback_system_dns")?;
     drop_column_if_exists(conn, "proxies", "endpoint")?;
     drop_column_if_exists(conn, "upstreams", "endpoint")?;
     conn.execute(
@@ -331,13 +331,13 @@ fn replace_config(conn: &mut Connection, config: DesktopConfig) -> Result<()> {
         r#"
         INSERT INTO app_settings (
             id, server_mode, server_listen, server_cert_file, server_key_file, server_path,
-            default_proxy, resolver_timeout, fallback_system_dns, ipv6_enabled,
+            default_proxy, resolver_timeout, ipv6_enabled,
             cache_enabled, cache_max_entries, cache_max_entry_size, cache_min_ttl, cache_max_ttl,
             cache_negative_ttl, cache_eviction_policy,
             healthcheck_enabled, healthcheck_interval, healthcheck_timeout, healthcheck_domain,
             healthcheck_failure_threshold, healthcheck_recovery_threshold, log_level
         )
-        VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         "#,
         params![
             config.server.mode,
@@ -347,7 +347,6 @@ fn replace_config(conn: &mut Connection, config: DesktopConfig) -> Result<()> {
             config.server.path,
             config.resolver.default_proxy,
             config.resolver.timeout,
-            bool_to_i64(config.resolver.fallback_system_dns),
             bool_to_i64(config.resolver.ipv6_enabled),
             bool_to_i64(config.cache.enabled),
             usize_to_i64(config.cache.max_entries)?,
@@ -510,7 +509,7 @@ fn load_settings(conn: &Connection) -> Result<DesktopConfig> {
             r#"
         SELECT
             server_mode, server_listen, server_cert_file, server_key_file, server_path,
-            default_proxy, resolver_timeout, fallback_system_dns, ipv6_enabled,
+            default_proxy, resolver_timeout, ipv6_enabled,
             cache_enabled, cache_max_entries, cache_max_entry_size, cache_min_ttl, cache_max_ttl,
             cache_negative_ttl, cache_eviction_policy,
             healthcheck_enabled, healthcheck_interval, healthcheck_timeout, healthcheck_domain,
@@ -536,28 +535,27 @@ fn load_settings(conn: &Connection) -> Result<DesktopConfig> {
                         routes: Vec::new(),
                         route_statuses: Vec::new(),
                         timeout: row.get(6)?,
-                        fallback_system_dns: int_to_bool(row.get(7)?),
-                        ipv6_enabled: int_to_bool(row.get(8)?),
+                        ipv6_enabled: int_to_bool(row.get(7)?),
                     },
                     cache: crate::desktop::DesktopCacheConfig {
-                        enabled: int_to_bool(row.get(9)?),
-                        max_entries: i64_to_usize(row.get(10)?)?,
-                        max_entry_size: i64_to_usize(row.get(11)?)?,
-                        min_ttl: i64_to_u32(row.get(12)?)?,
-                        max_ttl: i64_to_u32(row.get(13)?)?,
-                        negative_ttl: i64_to_u32(row.get(14)?)?,
-                        eviction_policy: row.get(15)?,
+                        enabled: int_to_bool(row.get(8)?),
+                        max_entries: i64_to_usize(row.get(9)?)?,
+                        max_entry_size: i64_to_usize(row.get(10)?)?,
+                        min_ttl: i64_to_u32(row.get(11)?)?,
+                        max_ttl: i64_to_u32(row.get(12)?)?,
+                        negative_ttl: i64_to_u32(row.get(13)?)?,
+                        eviction_policy: row.get(14)?,
                     },
                     healthcheck: crate::desktop::DesktopHealthcheckConfig {
-                        enabled: int_to_bool(row.get(16)?),
-                        interval: row.get(17)?,
-                        timeout: row.get(18)?,
-                        domain: row.get(19)?,
-                        failure_threshold: i64_to_u32(row.get(20)?)?,
-                        recovery_threshold: i64_to_u32(row.get(21)?)?,
+                        enabled: int_to_bool(row.get(15)?),
+                        interval: row.get(16)?,
+                        timeout: row.get(17)?,
+                        domain: row.get(18)?,
+                        failure_threshold: i64_to_u32(row.get(19)?)?,
+                        recovery_threshold: i64_to_u32(row.get(20)?)?,
                     },
                     log: crate::desktop::DesktopLogConfig {
-                        level: row.get(22)?,
+                        level: row.get(21)?,
                     },
                 })
             },

@@ -2077,13 +2077,13 @@ h2 {
 
 .notificationViewport {
   position: fixed;
-  top: 18px;
   right: 18px;
+  bottom: 18px;
   z-index: 50;
   display: flex;
   width: min(380px, calc(100vw - 36px));
   max-height: calc(100vh - 36px);
-  flex-direction: column;
+  flex-direction: column-reverse;
   gap: 10px;
   margin: 0;
   padding: 0;

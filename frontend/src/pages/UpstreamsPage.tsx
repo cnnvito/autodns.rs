@@ -169,7 +169,7 @@ export function UpstreamsPage({ doc, onChange }: ConfigPageProps) {
         </header>
         <div className="logicNote">
           <strong>切换逻辑</strong>
-          <span>拿到答案即返回；无答案或出错时继续下一个，全部失败后按设置回退系统 DNS。</span>
+          <span>拿到答案即返回；无答案或出错时继续下一个，全部失败后返回最后的无记录响应或 SERVFAIL。</span>
         </div>
         <div className="dataTable">
           <div className="upstreamHeaderRow">
@@ -254,7 +254,6 @@ export function UpstreamsPage({ doc, onChange }: ConfigPageProps) {
           </label>
           <div className="resolverSwitchGroup">
             <SwitchField checked={cfg.resolver.ipv6Enabled} onChange={(checked) => updateResolver({ ipv6Enabled: checked })}>启用 IPv6 AAAA 解析</SwitchField>
-            <SwitchField checked={cfg.resolver.fallbackSystemDNS} onChange={(checked) => updateResolver({ fallbackSystemDNS: checked })}>上游失败时回退系统 DNS</SwitchField>
           </div>
         </div>
       </section>

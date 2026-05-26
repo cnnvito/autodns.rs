@@ -2,6 +2,7 @@ use crate::desktop::*;
 use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::path::PathBuf;
 use std::time::Duration;
 use url::Url;
@@ -41,8 +42,6 @@ pub struct CoreResolverConfig {
     pub routes: Vec<String>,
     #[serde(default)]
     pub timeout: String,
-    #[serde(default)]
-    pub fallback_system_dns: bool,
     #[serde(default = "default_true")]
     pub ipv6_enabled: bool,
 }
@@ -137,7 +136,6 @@ pub fn default_local_config() -> CoreConfig {
                     ..Default::default()
                 },
             ],
-            fallback_system_dns: true,
             ipv6_enabled: true,
             ..Default::default()
         },
@@ -185,7 +183,6 @@ pub fn desktop_config_from_core(cfg: &CoreConfig) -> DesktopConfig {
             routes: cfg.resolver.routes.clone(),
             route_statuses: Vec::new(),
             timeout: cfg.resolver.timeout.clone(),
-            fallback_system_dns: cfg.resolver.fallback_system_dns,
             ipv6_enabled: cfg.resolver.ipv6_enabled,
         },
         cache: DesktopCacheConfig {
@@ -251,7 +248,6 @@ pub fn core_config_from_desktop(cfg: DesktopConfig) -> CoreConfig {
             hosts: cfg.resolver.hosts,
             routes: cfg.resolver.routes,
             timeout: cfg.resolver.timeout,
-            fallback_system_dns: cfg.resolver.fallback_system_dns,
             ipv6_enabled: cfg.resolver.ipv6_enabled,
         },
         cache: CoreCacheConfig {
@@ -509,7 +505,13 @@ impl CoreConfig {
             if upstream.endpoint.is_empty() {
                 return Err(anyhow!("resolver.upstreams[{}].endpoint is required", i));
             }
-            parse_upstream_endpoint(&upstream.endpoint)?;
+            let endpoint = parse_upstream_endpoint(&upstream.endpoint)?;
+            if upstream_points_to_listener(&self.server.listen, &endpoint) {
+                return Err(anyhow!(
+                    "resolver.upstreams[{}].endpoint must not point to server.listen",
+                    i
+                ));
+            }
             let proxy_name = if upstream.proxy.is_empty() {
                 &self.resolver.default_proxy
             } else {
@@ -580,6 +582,62 @@ impl CoreConfig {
             _ => Err(anyhow!("log.level must be one of debug,info,warn,error")),
         }
     }
+}
+
+fn upstream_points_to_listener(listen: &str, endpoint: &Url) -> bool {
+    let Ok(listener) = listen.trim().parse::<SocketAddr>() else {
+        return false;
+    };
+    let Some(upstream_port) = endpoint_port(endpoint) else {
+        return false;
+    };
+    if upstream_port != listener.port() {
+        return false;
+    }
+    let Some(upstream_ips) = endpoint_ips(endpoint) else {
+        return false;
+    };
+    upstream_ips
+        .into_iter()
+        .any(|upstream_ip| addresses_overlap(listener.ip(), upstream_ip))
+}
+
+fn endpoint_port(endpoint: &Url) -> Option<u16> {
+    endpoint.port().or_else(|| match endpoint.scheme() {
+        "udp" | "tcp" => Some(53),
+        "dot" | "doq" | "quic" => Some(853),
+        "http" => Some(80),
+        "https" => Some(443),
+        _ => None,
+    })
+}
+
+fn endpoint_ips(endpoint: &Url) -> Option<Vec<IpAddr>> {
+    let host = endpoint.host_str()?;
+    if host.eq_ignore_ascii_case("localhost") {
+        return Some(vec![
+            IpAddr::V4(Ipv4Addr::LOCALHOST),
+            IpAddr::V6(Ipv6Addr::LOCALHOST),
+        ]);
+    }
+    host.parse::<IpAddr>().ok().map(|ip| vec![ip])
+}
+
+fn addresses_overlap(listener_ip: IpAddr, upstream_ip: IpAddr) -> bool {
+    if listener_ip == upstream_ip {
+        return true;
+    }
+    if listener_ip.is_unspecified() && same_ip_family(listener_ip, upstream_ip) {
+        return upstream_ip.is_unspecified() || upstream_ip.is_loopback();
+    }
+    false
+}
+
+fn same_ip_family(a: IpAddr, b: IpAddr) -> bool {
+    matches!(
+        (a, b),
+        (IpAddr::V4(_), IpAddr::V4(_)) | (IpAddr::V6(_), IpAddr::V6(_))
+    )
 }
 
 pub fn parse_go_duration(raw: &str) -> Result<Duration> {
@@ -715,4 +773,80 @@ fn proxy_endpoint_with_auth(raw: &str, username: &str, password: &str) -> String
     let _ = url.set_username(username);
     let _ = url.set_password(Some(password));
     url.to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn config_with_listener_and_upstream(listen: &str, endpoint: &str) -> CoreConfig {
+        let mut cfg = default_local_config();
+        cfg.server.listen = listen.into();
+        cfg.resolver.upstreams = vec![CoreUpstreamConfig {
+            name: "test".into(),
+            endpoint: endpoint.into(),
+            ..Default::default()
+        }];
+        cfg
+    }
+
+    #[test]
+    fn validate_rejects_upstream_pointing_to_listener() {
+        let cfg = config_with_listener_and_upstream("127.0.0.1:15353", "udp://127.0.0.1:15353");
+
+        let err = cfg
+            .validate()
+            .expect_err("upstream points back to listener");
+
+        assert!(err
+            .to_string()
+            .contains("endpoint must not point to server.listen"));
+    }
+
+    #[test]
+    fn validate_rejects_upstream_with_implicit_dns_port_pointing_to_listener() {
+        let cfg = config_with_listener_and_upstream("127.0.0.1:53", "udp://127.0.0.1");
+
+        let err = cfg
+            .validate()
+            .expect_err("implicit port points back to listener");
+
+        assert!(err
+            .to_string()
+            .contains("endpoint must not point to server.listen"));
+    }
+
+    #[test]
+    fn validate_rejects_localhost_upstream_pointing_to_listener() {
+        let cfg = config_with_listener_and_upstream("127.0.0.1:15353", "tcp://localhost:15353");
+
+        let err = cfg
+            .validate()
+            .expect_err("localhost points back to listener");
+
+        assert!(err
+            .to_string()
+            .contains("endpoint must not point to server.listen"));
+    }
+
+    #[test]
+    fn validate_rejects_loopback_upstream_when_listener_is_unspecified() {
+        let cfg = config_with_listener_and_upstream("0.0.0.0:53", "udp://127.0.0.1:53");
+
+        let err = cfg
+            .validate()
+            .expect_err("loopback points back to unspecified listener");
+
+        assert!(err
+            .to_string()
+            .contains("endpoint must not point to server.listen"));
+    }
+
+    #[test]
+    fn validate_allows_public_upstream_on_same_port_when_listener_is_unspecified() {
+        let cfg = config_with_listener_and_upstream("0.0.0.0:53", "udp://1.1.1.1:53");
+
+        cfg.validate()
+            .expect("public upstream is not the local listener");
+    }
 }
