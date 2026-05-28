@@ -94,27 +94,6 @@ scripts/     Build helper scripts
 - Runtime configuration is stored in a local SQLite database managed by the GUI.
 - The user does not need to edit or know about config files.
 
-## Performance TODO
-
-Completed optimizations:
-
-- Replaced the DNS cache's global `Mutex<HashMap<...>>` with `moka::sync::Cache`.
-- Kept DNS TTL handling in the resolver: cache hits rewrite response TTLs to the remaining lifetime.
-- Limited listener task fan-out with a shared `Semaphore`.
-- Reused direct UDP upstream sockets and matched concurrent responses by rewritten DNS IDs.
-- Shortened health-status locking with snapshot reads.
-- Skipped health probes after recent real query success, staggered probe startup, and limited concurrent probes.
-- Added health-check backoff while an upstream remains unhealthy.
-- Reduced idle UI polling and removed tray refreshes from regular status polling.
-- Used `arc-swap` for lock-free runtime resolver reads during hot reload.
-- Reused DoQ endpoints and connections; open a new QUIC stream per query.
-- Reused TCP and DoT connections with DNS ID-based pipelining.
-- Reused SOCKS5 UDP associations separately from direct UDP reuse.
-- Made desktop status updates event-driven with coalesced UI emissions.
-- Reused cached system-DNS adapter data for apply/restore operations.
-- Moved startup adapter refresh into a background warm-up after first paint.
-- Replaced render-time config dirty checks with edit-time signature checks.
-
 ## License
 
 MIT
