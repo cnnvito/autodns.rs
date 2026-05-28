@@ -57,6 +57,7 @@ export type DnsHistoryEntry = {
   durationMs: number;
   attemptCount: number;
   responseCode: string;
+  minTtl?: number;
   error: string;
 };
 
@@ -86,6 +87,7 @@ export type ServerConfig = {
 export type ResolverConfig = {
   upstreams: UpstreamConfig[];
   proxies: ProxyConfig[];
+  bootstrapDns: string[];
   defaultProxy: string;
   hosts: string[];
   hostStatuses: HostStatus[];

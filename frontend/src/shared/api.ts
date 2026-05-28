@@ -175,6 +175,7 @@ function normalizeConfigDocument(doc: ConfigDocument): ConfigDocument {
         ...config.resolver,
         upstreams: normalizeUpstreams(config.resolver.upstreams),
         proxies: normalizeProxies(config.resolver.proxies),
+        bootstrapDns: Array.isArray(config.resolver.bootstrapDns) ? config.resolver.bootstrapDns : [],
         hosts: Array.isArray(config.resolver.hosts) ? config.resolver.hosts : [],
         hostStatuses: Array.isArray(config.resolver.hostStatuses) ? config.resolver.hostStatuses : [],
         routes: Array.isArray(config.resolver.routes) ? config.resolver.routes : [],
@@ -198,6 +199,7 @@ function normalizeDnsHistoryEntry(item: Partial<DnsHistoryList["items"][number]>
     durationMs: Number.isFinite(item.durationMs) ? item.durationMs! : 0,
     attemptCount: Number.isFinite(item.attemptCount) ? item.attemptCount! : 0,
     responseCode: item.responseCode ?? "",
+    minTtl: Number.isFinite(item.minTtl) ? item.minTtl : undefined,
     error: item.error ?? ""
   };
 }

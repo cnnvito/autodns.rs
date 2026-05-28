@@ -155,7 +155,12 @@ export function UpstreamsPage({ doc, onChange }: ConfigPageProps) {
     updateResolver({ proxies, upstreams, defaultProxy });
   }
 
+  function updateBootstrapDns(value: string) {
+    updateResolver({ bootstrapDns: splitBootstrapDns(value) });
+  }
+
   const proxyOptions = [{ value: "", label: "直连" }, ...cfg.resolver.proxies.map((proxy) => ({ value: proxy.name, label: proxy.name }))];
+  const bootstrapDns = cfg.resolver.bootstrapDns.join(", ");
 
   return (
     <section className="pageStack">
@@ -252,6 +257,10 @@ export function UpstreamsPage({ doc, onChange }: ConfigPageProps) {
             <span>解析超时</span>
             <input value={cfg.resolver.timeout} onChange={(event) => updateResolver({ timeout: event.target.value })} placeholder="5s" />
           </label>
+          <label className="compactField bootstrapDnsField">
+            <span>上游域名 fallback</span>
+            <input value={bootstrapDns} onChange={(event) => updateBootstrapDns(event.target.value)} placeholder="1.1.1.1:53, 8.8.8.8:53" />
+          </label>
           <div className="resolverSwitchGroup">
             <SwitchField checked={cfg.resolver.ipv6Enabled} onChange={(checked) => updateResolver({ ipv6Enabled: checked })}>启用 IPv6 AAAA 解析</SwitchField>
           </div>
@@ -317,6 +326,13 @@ function moveOrderItem(order: number[], fromPosition: number, targetPosition: nu
   const [item] = next.splice(fromPosition, 1);
   next.splice(targetPosition, 0, item);
   return next;
+}
+
+function splitBootstrapDns(value: string): string[] {
+  return value
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
 }
 
 function LoadingPanel() {

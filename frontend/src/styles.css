@@ -1268,13 +1268,17 @@ h2 {
 
 .resolverPolicyBar {
   display: grid;
-  grid-template-columns: minmax(150px, 220px) minmax(0, 1fr);
+  grid-template-columns: minmax(130px, 180px) minmax(240px, 1fr) minmax(180px, auto);
   gap: 12px;
   align-items: end;
   border: 1px solid var(--border-soft);
   border-radius: 6px;
   background: var(--surface-soft);
   padding: 10px 12px;
+  min-width: 0;
+}
+
+.bootstrapDnsField {
   min-width: 0;
 }
 
@@ -1428,19 +1432,22 @@ h2 {
 
 .historyToolbar {
   display: grid;
-  grid-template-columns: minmax(260px, 460px) 92px;
+  grid-template-columns: minmax(280px, 520px);
   gap: 10px;
-  align-items: end;
+  align-items: center;
+  border-bottom: 1px solid var(--border-soft);
+  padding-bottom: 12px;
 }
 
 .historySearchField {
   display: flex;
-  flex-direction: column;
-  gap: 6px;
+  align-items: center;
+  gap: 10px;
   min-width: 0;
 }
 
 .historySearchField > span {
+  flex: 0 0 auto;
   color: var(--muted);
   font-size: 12px;
 }
@@ -1449,6 +1456,7 @@ h2 {
   display: flex;
   align-items: center;
   gap: 8px;
+  width: 100%;
   min-height: 36px;
   border: 1px solid var(--border-strong);
   border-radius: 6px;
@@ -1466,29 +1474,6 @@ h2 {
   background: transparent;
 }
 
-.historyResultCount {
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  gap: 4px;
-  min-height: 36px;
-  min-width: 0;
-  border: 1px solid var(--border-soft);
-  border-radius: 6px;
-  background: var(--surface-soft);
-  padding: 7px 10px;
-}
-
-.historyResultCount span {
-  color: var(--muted);
-  font-size: 12px;
-}
-
-.historyResultCount strong {
-  color: var(--text-strong);
-  font-size: 14px;
-}
-
 .historyList {
   display: flex;
   flex-direction: column;
@@ -1500,10 +1485,10 @@ h2 {
 .historyTableHeader,
 .historyTableRow {
   display: grid;
-  grid-template-columns: minmax(150px, 0.9fr) minmax(180px, 1.2fr) 64px 72px minmax(120px, 0.75fr) 72px 94px minmax(180px, 1.2fr);
+  grid-template-columns: minmax(150px, 0.9fr) minmax(180px, 1.2fr) 64px 72px minmax(120px, 0.75fr) 72px 64px 94px minmax(180px, 1.2fr);
   gap: 8px;
   align-items: center;
-  min-width: 980px;
+  min-width: 1040px;
 }
 
 .historyTableHeader {
@@ -1565,10 +1550,17 @@ h2 {
   justify-content: center;
 }
 
+.historyDetailsPanel .panelHeaderActions button,
+.historyMore button {
+  min-height: 32px;
+  padding: 0 10px;
+  font-size: 12px;
+}
+
 .historyTopList {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 6px;
   min-width: 0;
 }
 
@@ -1579,11 +1571,11 @@ h2 {
   align-items: center;
   min-width: 0;
   width: 100%;
-  min-height: 54px;
+  min-height: 44px;
   border: 1px solid var(--border-soft);
   border-radius: 6px;
   background: var(--surface-soft);
-  padding: 9px 10px;
+  padding: 6px 8px;
   color: var(--text);
   text-align: left;
 }
@@ -1608,7 +1600,7 @@ h2 {
 .historyTopRow div {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 2px;
   min-width: 0;
 }
 
@@ -1634,7 +1626,7 @@ h2 {
   justify-self: end;
   color: var(--text-strong);
   font-style: normal;
-  font-size: 16px;
+  font-size: 14px;
   font-weight: 800;
 }
 
@@ -2477,6 +2469,7 @@ h2 {
   .overviewFacts,
   .cacheGrid,
   .settingsGrid,
+  .resolverPolicyBar,
   .historyLayout {
     grid-template-columns: 1fr;
   }

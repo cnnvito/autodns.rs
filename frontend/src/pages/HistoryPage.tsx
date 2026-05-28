@@ -101,10 +101,6 @@ export function HistoryPage() {
               <input value={domain} onChange={(event) => setDomain(event.target.value)} placeholder="example.com" />
             </div>
           </label>
-          <div className="historyResultCount">
-            <span>匹配</span>
-            <strong>{total}</strong>
-          </div>
         </div>
 
         {error ? <div className="lookupError">{error}</div> : null}
@@ -117,6 +113,7 @@ export function HistoryPage() {
             <span>来源</span>
             <span>上游</span>
             <span>耗时</span>
+            <span>TTL</span>
             <span>响应</span>
             <span>错误</span>
           </div>
@@ -168,6 +165,7 @@ function HistoryRow({ item }: { item: DnsHistoryEntry }) {
   const upstream = item.upstreamName
     ? `${item.upstreamName}${item.upstreamProtocol ? `/${item.upstreamProtocol}` : ""}`
     : "-";
+  const ttl = Number.isFinite(item.minTtl) ? `${item.minTtl} s` : "-";
   const error = item.error || "-";
 
   return (
@@ -178,6 +176,7 @@ function HistoryRow({ item }: { item: DnsHistoryEntry }) {
       <span className={`tag source-${item.source}`}>{source}</span>
       <span>{upstream}</span>
       <span>{item.durationMs} ms</span>
+      <span>{ttl}</span>
       <span className={item.responseCode === "NOERROR" ? "historyCode ok" : "historyCode"}>{item.responseCode}</span>
       <span title={error}>{error}</span>
     </div>
