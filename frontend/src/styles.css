@@ -358,6 +358,7 @@ h2 {
 .statusBlock span,
 .field span,
 .metric span,
+.overviewFact span,
 .detail span {
   color: var(--muted);
   font-size: 13px;
@@ -712,15 +713,24 @@ h2 {
   min-height: 154px;
 }
 
+.overviewStatusHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
 .overviewStatusLine {
   display: flex;
   align-items: center;
   gap: 14px;
+  min-width: 0;
 }
 
 .overviewStatusLine .statusDot {
   width: 16px;
   height: 16px;
+  flex: 0 0 auto;
 }
 
 .overviewStatusLine h2 {
@@ -733,10 +743,183 @@ h2 {
   margin-top: 4px;
 }
 
+.overviewRefreshButton {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+}
+
 .overviewFacts {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 10px;
+}
+
+.overviewFact {
+  min-width: 0;
+  border: 1px solid var(--border-soft);
+  border-radius: 6px;
+  background: var(--surface-soft);
+  padding: 11px 12px;
+}
+
+.overviewFact strong {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-strong);
+  font-size: 17px;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.overviewFact small {
+  display: block;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.overviewError {
+  border: 1px solid var(--danger-ring);
+  border-radius: 6px;
+  background: var(--danger-bg);
+  color: var(--danger);
+  padding: 10px 12px;
+  font-size: 12px;
+}
+
+.overviewPanels {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(320px, 0.9fr);
+  gap: 14px;
+  align-items: start;
+  min-width: 0;
+}
+
+.overviewListPanel {
+  min-width: 0;
+}
+
+.overviewUpdated {
+  color: var(--muted);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.overviewDomainList,
+.overviewIssueList,
+.overviewUpstreamList {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.overviewDomainRow,
+.overviewIssueRow,
+.overviewUpstreamRow {
+  display: grid;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  border: 1px solid var(--border-soft);
+  border-radius: 6px;
+  background: var(--surface-soft);
+  padding: 8px 10px;
+}
+
+.overviewDomainRow {
+  grid-template-columns: 24px minmax(0, 1fr) minmax(42px, auto);
+}
+
+.overviewDomainRow > span {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 999px;
+  background: var(--neutral-bg);
+  color: var(--neutral);
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.overviewDomainRow div,
+.overviewIssueRow div,
+.overviewUpstreamRow div {
+  min-width: 0;
+}
+
+.overviewDomainRow strong,
+.overviewDomainRow small,
+.overviewIssueRow strong,
+.overviewIssueRow small,
+.overviewUpstreamRow strong,
+.overviewUpstreamRow small {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.overviewDomainRow strong,
+.overviewIssueRow strong,
+.overviewUpstreamRow strong {
+  color: var(--text-strong);
+  font-size: 13px;
+}
+
+.overviewDomainRow small,
+.overviewIssueRow small,
+.overviewUpstreamRow small {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.overviewDomainRow em {
+  justify-self: end;
+  color: var(--text-strong);
+  font-style: normal;
+  font-size: 14px;
+  font-weight: 800;
+}
+
+.overviewIssueRow {
+  grid-template-columns: minmax(0, 1fr) minmax(96px, 0.55fr);
+}
+
+.overviewIssueRow > span {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--danger);
+  font-size: 12px;
+  font-weight: 700;
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.overviewUpstreamList {
+  margin-top: 14px;
+  border-top: 1px solid var(--border-soft);
+  padding-top: 12px;
+}
+
+.overviewUpstreamList h3 {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.overviewUpstreamRow {
+  grid-template-columns: minmax(0, 1fr) 86px;
 }
 
 .overviewSide {
@@ -1432,9 +1615,9 @@ h2 {
 
 .historyToolbar {
   display: grid;
-  grid-template-columns: minmax(280px, 520px);
-  gap: 10px;
-  align-items: center;
+  grid-template-columns: minmax(280px, 440px) minmax(0, 1fr);
+  gap: 12px;
+  align-items: end;
   border-bottom: 1px solid var(--border-soft);
   padding-bottom: 12px;
 }
@@ -1474,6 +1657,58 @@ h2 {
   background: transparent;
 }
 
+.historyFilters {
+  display: flex;
+  align-items: end;
+  justify-content: flex-end;
+  gap: 10px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.historySegmentedGroup {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+}
+
+.historySegmentedGroup > span {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.historySegmented {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  min-height: 32px;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  background: var(--surface-soft);
+  padding: 2px;
+}
+
+.historySegmented button {
+  min-height: 26px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  padding: 0 9px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.historySegmented button:hover:not(:disabled) {
+  background: var(--button-hover);
+}
+
+.historySegmented button.active {
+  background: var(--button-bg);
+  color: var(--text-strong);
+  box-shadow: inset 0 0 0 1px var(--border-soft);
+}
+
 .historyList {
   display: flex;
   flex-direction: column;
@@ -1485,10 +1720,10 @@ h2 {
 .historyTableHeader,
 .historyTableRow {
   display: grid;
-  grid-template-columns: minmax(150px, 0.9fr) minmax(180px, 1.2fr) 64px 72px minmax(120px, 0.75fr) 72px 64px 94px minmax(180px, 1.2fr);
+  grid-template-columns: minmax(150px, 0.9fr) minmax(190px, 1.35fr) 64px 72px minmax(120px, 0.75fr) 72px minmax(104px, 0.55fr);
   gap: 8px;
   align-items: center;
-  min-width: 1040px;
+  min-width: 840px;
 }
 
 .historyTableHeader {
@@ -1500,15 +1735,21 @@ h2 {
 }
 
 .historyTableRow {
+  width: 100%;
+  min-height: 0;
   border: 1px solid var(--border-soft);
   border-radius: 6px;
   background: var(--surface-soft);
   padding: 9px 8px;
+  color: var(--text);
   font-size: 12px;
+  text-align: left;
 }
 
 .historyTableRow span,
-.historyTableRow strong {
+.historyTableRow strong,
+.historyStatus em,
+.historyStatus small {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1520,13 +1761,85 @@ h2 {
   font-size: 13px;
 }
 
-.historyCode {
-  color: var(--warning);
-  font-weight: 750;
+.historyRowGroup {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 840px;
 }
 
-.historyCode.ok {
+.historyStatus {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 14px;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+.historyStatus em {
+  color: var(--text-strong);
+  font-style: normal;
+  font-weight: 800;
+}
+
+.historyStatus small {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.historyStatus.ok em {
   color: var(--success);
+}
+
+.historyStatus.warn em {
+  color: var(--warning);
+}
+
+.historyStatus.error em {
+  color: var(--danger);
+}
+
+.historyTableRow[aria-expanded="true"] .historyStatus svg {
+  transform: rotate(180deg);
+}
+
+.historyStatus svg {
+  color: var(--muted);
+  transition: transform 140ms ease;
+}
+
+.historyRowDetails {
+  display: grid;
+  grid-template-columns: minmax(90px, 0.35fr) minmax(90px, 0.35fr) minmax(90px, 0.35fr) minmax(220px, 1.3fr);
+  gap: 8px;
+  border: 1px solid var(--border-soft);
+  border-radius: 6px;
+  background: var(--surface);
+  padding: 8px;
+}
+
+.historyDetail {
+  min-width: 0;
+  border-radius: 5px;
+  background: var(--surface-soft);
+  padding: 7px 9px;
+}
+
+.historyDetail span {
+  display: block;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.historyDetail strong {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-strong);
+  font-size: 12px;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .tag.source-cache {
@@ -2467,6 +2780,8 @@ h2 {
 
   .runtimeSummaryGrid,
   .overviewFacts,
+  .overviewSimpleGrid,
+  .overviewPanels,
   .cacheGrid,
   .settingsGrid,
   .resolverPolicyBar,
@@ -2478,6 +2793,8 @@ h2 {
 @media (max-width: 680px) {
   .runtimeSummaryGrid,
   .overviewFacts,
+  .overviewSimpleGrid,
+  .overviewPanels,
   .cacheGrid,
   .settingsGrid,
   .historyToolbar {
@@ -2486,11 +2803,18 @@ h2 {
 
   .attentionRow,
   .chainRow,
-  .healthRow {
+  .healthRow,
+  .overviewIssueRow {
     grid-template-columns: 1fr;
   }
 
-  .healthBadge {
+  .overviewStatusHeader {
+    flex-direction: column;
+  }
+
+  .healthBadge,
+  .overviewIssueRow > span {
     justify-self: start;
+    text-align: left;
   }
 }

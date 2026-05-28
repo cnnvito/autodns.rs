@@ -7,7 +7,10 @@ import type {
   DesktopPreferences,
   DesktopStatus,
   DnsHistoryList,
+  DnsHistoryOverview,
+  DnsHistoryStatusFilter,
   DnsHistoryTopDomain,
+  DnsHistoryWindow,
   DnsLookupResult,
   ProxyConfig,
   SystemDnsSettings,
@@ -87,16 +90,27 @@ export async function lookupDomain(domain: string, recordType: string): Promise<
   };
 }
 
-export async function listDnsHistory(domain: string, limit = 100, offset = 0): Promise<DnsHistoryList> {
-  const result = await invoke<DnsHistoryList>("list_dns_history", { domain, limit, offset });
+export async function listDnsHistory(
+  domain: string,
+  limit = 100,
+  offset = 0,
+  statusFilter: DnsHistoryStatusFilter = "all",
+  window: DnsHistoryWindow = "all"
+): Promise<DnsHistoryList> {
+  const result = await invoke<DnsHistoryList>("list_dns_history", { domain, statusFilter, window, limit, offset });
   return {
     items: Array.isArray(result.items) ? result.items.map(normalizeDnsHistoryEntry) : [],
     total: Number.isFinite(result.total) ? result.total : 0
   };
 }
 
-export async function dnsHistoryTopDomains(limit = 20): Promise<DnsHistoryTopDomain[]> {
-  const result = await invoke<DnsHistoryTopDomain[]>("dns_history_top_domains", { limit });
+export async function dnsHistoryTopDomains(
+  limit = 20,
+  domain = "",
+  statusFilter: DnsHistoryStatusFilter = "all",
+  window: DnsHistoryWindow = "all"
+): Promise<DnsHistoryTopDomain[]> {
+  const result = await invoke<DnsHistoryTopDomain[]>("dns_history_top_domains", { limit, domain, statusFilter, window });
   return Array.isArray(result)
     ? result.map((item) => ({
         domain: item.domain ?? "",
@@ -105,6 +119,10 @@ export async function dnsHistoryTopDomains(limit = 20): Promise<DnsHistoryTopDom
         averageDurationMs: Number.isFinite(item.averageDurationMs) ? item.averageDurationMs : 0
       }))
     : [];
+}
+
+export async function dnsHistoryOverview(): Promise<DnsHistoryOverview> {
+  return normalizeDnsHistoryOverview(await invoke<DnsHistoryOverview>("dns_history_overview"));
 }
 
 export async function clearDnsHistory(): Promise<number> {
@@ -201,6 +219,26 @@ function normalizeDnsHistoryEntry(item: Partial<DnsHistoryList["items"][number]>
     responseCode: item.responseCode ?? "",
     minTtl: Number.isFinite(item.minTtl) ? item.minTtl : undefined,
     error: item.error ?? ""
+  };
+}
+
+function normalizeDnsHistoryOverview(item: Partial<DnsHistoryOverview>): DnsHistoryOverview {
+  return {
+    windowStartedAt: item.windowStartedAt ?? "",
+    generatedAt: item.generatedAt ?? "",
+    total: Number.isFinite(item.total) ? item.total! : 0,
+    cacheHits: Number.isFinite(item.cacheHits) ? item.cacheHits! : 0,
+    failures: Number.isFinite(item.failures) ? item.failures! : 0,
+    averageDurationMs: Number.isFinite(item.averageDurationMs) ? item.averageDurationMs! : 0,
+    topDomains: Array.isArray(item.topDomains)
+      ? item.topDomains.map((domain) => ({
+          domain: domain.domain ?? "",
+          count: Number.isFinite(domain.count) ? domain.count : 0,
+          lastSeenAt: domain.lastSeenAt ?? "",
+          averageDurationMs: Number.isFinite(domain.averageDurationMs) ? domain.averageDurationMs : 0
+        }))
+      : [],
+    recentErrors: Array.isArray(item.recentErrors) ? item.recentErrors.map(normalizeDnsHistoryEntry) : []
   };
 }
 

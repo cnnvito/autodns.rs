@@ -68,6 +68,21 @@ export type DnsHistoryTopDomain = {
   averageDurationMs: number;
 };
 
+export type DnsHistoryStatusFilter = "all" | "errors";
+
+export type DnsHistoryWindow = "1h" | "24h" | "all";
+
+export type DnsHistoryOverview = {
+  windowStartedAt: string;
+  generatedAt: string;
+  total: number;
+  cacheHits: number;
+  failures: number;
+  averageDurationMs: number;
+  topDomains: DnsHistoryTopDomain[];
+  recentErrors: DnsHistoryEntry[];
+};
+
 export type DesktopConfig = {
   server: ServerConfig;
   resolver: ResolverConfig;

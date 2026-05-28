@@ -473,7 +473,7 @@ export function App() {
 
         <section className="workspace">
           <Tabs.Content className="mainTabsContent" value="overview">
-            <OverviewPage status={status} lastStarted={lastStarted} />
+            <OverviewPage active={activeTab === "overview"} status={status} lastStarted={lastStarted} />
           </Tabs.Content>
 
           <Tabs.Content className="mainTabsContent" value="rules">
