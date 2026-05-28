@@ -32,6 +32,7 @@ pub(crate) struct DnsHistoryEvent {
     pub duration_ms: u128,
     pub attempt_count: usize,
     pub response_code: String,
+    pub min_ttl: Option<u32>,
     pub error: String,
 }
 

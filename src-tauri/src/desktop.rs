@@ -25,6 +25,7 @@ pub struct DesktopServerConfig {
 pub struct DesktopResolverConfig {
     pub upstreams: Vec<DesktopUpstreamConfig>,
     pub proxies: Vec<DesktopProxyConfig>,
+    pub bootstrap_dns: Vec<String>,
     pub default_proxy: String,
     pub hosts: Vec<String>,
     pub host_statuses: Vec<DesktopHostStatus>,
@@ -158,6 +159,8 @@ pub struct DnsHistoryEntry {
     pub duration_ms: u128,
     pub attempt_count: usize,
     pub response_code: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub min_ttl: Option<u32>,
     pub error: String,
 }
 

@@ -1,4 +1,7 @@
-use crate::config::{parse_go_duration, parse_upstream_endpoint, CoreConfig, CoreUpstreamConfig};
+use crate::config::{
+    parse_bootstrap_dns_servers, parse_go_duration, parse_upstream_endpoint, CoreConfig,
+    CoreUpstreamConfig,
+};
 use crate::desktop::{DnsLookupRecord, DnsLookupResult, HealthState, ProxyHealth, UpstreamHealth};
 use crate::history::{DnsHistoryEvent, DnsHistoryRecorder};
 use crate::logging::LogBuffer;
@@ -18,9 +21,10 @@ use moka::sync::Cache;
 use parking_lot::Mutex;
 use reqwest::header::{ACCEPT, CONTENT_TYPE};
 use std::collections::{HashMap, HashSet};
+use std::error::Error as StdError;
 use std::fs::File;
 use std::io::BufReader;
-use std::net::{IpAddr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 use tokio::io::{split, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadHalf, WriteHalf};
@@ -53,6 +57,7 @@ const MAX_CONCURRENT_REQUESTS: usize = 256;
 const MAX_CONCURRENT_HEALTHCHECKS: usize = 4;
 const HEALTHCHECK_STAGGER_STEP: Duration = Duration::from_millis(200);
 const HEALTHCHECK_MAX_BACKOFF: Duration = Duration::from_secs(300);
+const BOOTSTRAP_LOOKUP_TIMEOUT: Duration = Duration::from_secs(2);
 
 #[derive(Clone)]
 pub struct RuntimeView {
@@ -165,6 +170,7 @@ struct UpstreamClient {
     name: String,
     endpoint: Endpoint,
     proxy: Option<ProxyEndpoint>,
+    bootstrap: Option<Arc<BootstrapResolver>>,
     http: Option<reqwest::Client>,
     udp: Arc<Mutex<Option<Arc<UdpUpstreamClient>>>>,
     socks5_udp: Arc<Mutex<Option<Arc<Socks5UdpUpstreamClient>>>>,
@@ -176,9 +182,16 @@ struct UpstreamClient {
 #[derive(Clone)]
 struct Endpoint {
     scheme: String,
+    host: String,
+    port: u16,
     address: String,
     url: String,
     server_name: String,
+}
+
+#[derive(Clone)]
+struct BootstrapResolver {
+    servers: Arc<[SocketAddr]>,
 }
 
 #[derive(Clone)]
@@ -494,6 +507,10 @@ fn build_resolver(
     logs: LogBuffer,
     history: DnsHistoryRecorder,
 ) -> Result<Resolver> {
+    let bootstrap = {
+        let servers = parse_bootstrap_dns_servers(&cfg.resolver.bootstrap_dns)?;
+        (!servers.is_empty()).then(|| Arc::new(BootstrapResolver::new(servers)))
+    };
     let proxies = cfg
         .resolver
         .proxies
@@ -519,7 +536,12 @@ fn build_resolver(
             )
         };
         let http = if endpoint.scheme == "http" || endpoint.scheme == "https" {
-            Some(build_http_client(proxy.as_ref())?)
+            Some(build_http_client(proxy.as_ref(), bootstrap.as_ref())?)
+        } else {
+            None
+        };
+        let bootstrap = if proxy.is_none() {
+            bootstrap.clone()
         } else {
             None
         };
@@ -529,6 +551,7 @@ fn build_resolver(
                 name: item.name.clone(),
                 endpoint,
                 proxy,
+                bootstrap,
                 http,
                 udp: Arc::new(Mutex::new(None)),
                 socks5_udp: Arc::new(Mutex::new(None)),
@@ -599,7 +622,7 @@ fn endpoint_from_url(url: &Url, server_name: &str) -> Result<Endpoint> {
         String::new()
     };
     let host = url.host_str().unwrap_or_default().to_string();
-    let address = format!("{}:{}", host, port);
+    let address = format_host_port(&host, port);
     let doh_url = if scheme == "http" || scheme == "https" {
         format!("{scheme}://{address}{path}")
     } else {
@@ -607,6 +630,8 @@ fn endpoint_from_url(url: &Url, server_name: &str) -> Result<Endpoint> {
     };
     Ok(Endpoint {
         scheme,
+        host: host.clone(),
+        port,
         address,
         url: doh_url,
         server_name: if server_name.trim().is_empty() {
@@ -615,6 +640,14 @@ fn endpoint_from_url(url: &Url, server_name: &str) -> Result<Endpoint> {
             server_name.trim().to_string()
         },
     })
+}
+
+fn format_host_port(host: &str, port: u16) -> String {
+    if host.contains(':') && !host.starts_with('[') {
+        format!("[{host}]:{port}")
+    } else {
+        format!("{host}:{port}")
+    }
 }
 
 fn proxy_endpoint_from_raw(raw: &str) -> Result<ProxyEndpoint> {
@@ -636,7 +669,10 @@ fn proxy_endpoint_from_raw(raw: &str) -> Result<ProxyEndpoint> {
     })
 }
 
-fn build_http_client(proxy: Option<&ProxyEndpoint>) -> Result<reqwest::Client> {
+fn build_http_client(
+    proxy: Option<&ProxyEndpoint>,
+    bootstrap: Option<&Arc<BootstrapResolver>>,
+) -> Result<reqwest::Client> {
     let mut builder = reqwest::Client::builder();
     if let Some(proxy) = proxy {
         let url = if proxy.username.is_empty() {
@@ -648,6 +684,8 @@ fn build_http_client(proxy: Option<&ProxyEndpoint>) -> Result<reqwest::Client> {
             )
         };
         builder = builder.proxy(reqwest::Proxy::all(url)?);
+    } else if let Some(bootstrap) = bootstrap {
+        builder = builder.dns_resolver(bootstrap.clone());
     }
     Ok(builder.build()?)
 }
@@ -1358,6 +1396,7 @@ impl Resolver {
             duration_ms: duration.as_millis(),
             attempt_count,
             response_code: response_code_label(rcode(resp)),
+            min_ttl: answer_min_ttl(resp).ok().flatten(),
             error: error.to_string(),
         });
     }
@@ -1414,7 +1453,8 @@ impl UpstreamClient {
 
     async fn exchange_udp(&self, req: &[u8]) -> Result<Vec<u8>> {
         let client = self.udp_client().await?;
-        client.exchange(&self.endpoint.address, req).await
+        let target = self.first_endpoint_addr().await?;
+        client.exchange(target, req).await
     }
 
     async fn udp_client(&self) -> Result<Arc<UdpUpstreamClient>> {
@@ -1484,7 +1524,7 @@ impl UpstreamClient {
         let stream: BoxedAsyncIo = if let Some(proxy) = &self.proxy {
             Box::new(socks5_connect(proxy, &self.endpoint.address).await?)
         } else {
-            Box::new(TcpStream::connect(&self.endpoint.address).await?)
+            Box::new(self.connect_direct().await?)
         };
         let mut tcp = self.tcp.lock();
         if let Some(existing) = tcp.as_ref() {
@@ -1521,7 +1561,7 @@ impl UpstreamClient {
             let stream = socks5_connect(proxy, &self.endpoint.address).await?;
             Box::new(connector.connect(server_name, stream).await?)
         } else {
-            let stream = TcpStream::connect(&self.endpoint.address).await?;
+            let stream = self.connect_direct().await?;
             Box::new(connector.connect(server_name, stream).await?)
         };
         let mut dot = self.dot.lock();
@@ -1555,7 +1595,7 @@ impl UpstreamClient {
         if let Some(client) = self.doq.lock().clone() {
             return Ok(client);
         }
-        let client = DoqUpstreamClient::connect(&self.endpoint).await?;
+        let client = DoqUpstreamClient::connect(&self.endpoint, self.bootstrap.as_deref()).await?;
         let mut doq = self.doq.lock();
         if let Some(existing) = doq.as_ref() {
             return Ok(existing.clone());
@@ -1563,6 +1603,128 @@ impl UpstreamClient {
         *doq = Some(client.clone());
         Ok(client)
     }
+
+    async fn connect_direct(&self) -> Result<TcpStream> {
+        let addrs = self.endpoint_addrs().await?;
+        connect_socket_addrs(&addrs, &self.endpoint.address).await
+    }
+
+    async fn first_endpoint_addr(&self) -> Result<SocketAddr> {
+        self.endpoint_addrs()
+            .await?
+            .into_iter()
+            .next()
+            .ok_or_else(|| {
+                anyhow!(
+                    "resolve upstream {} returned no addresses",
+                    self.endpoint.host
+                )
+            })
+    }
+
+    async fn endpoint_addrs(&self) -> Result<Vec<SocketAddr>> {
+        if let Some(bootstrap) = &self.bootstrap {
+            return bootstrap
+                .resolve_socket_addrs(&self.endpoint.host, self.endpoint.port)
+                .await;
+        }
+        if let Ok(ip) = self.endpoint.host.parse::<IpAddr>() {
+            return Ok(vec![SocketAddr::new(ip, self.endpoint.port)]);
+        }
+        Ok(tokio::net::lookup_host(&self.endpoint.address)
+            .await
+            .with_context(|| format!("resolve upstream {}", self.endpoint.address))?
+            .collect())
+    }
+}
+
+async fn connect_socket_addrs(addrs: &[SocketAddr], label: &str) -> Result<TcpStream> {
+    let mut last_error = None;
+    for addr in addrs {
+        match TcpStream::connect(addr).await {
+            Ok(stream) => return Ok(stream),
+            Err(err) => last_error = Some(err),
+        }
+    }
+    Err(last_error
+        .map(|err| anyhow!(err).context(format!("connect upstream {label}")))
+        .unwrap_or_else(|| anyhow!("resolve upstream {label} returned no addresses")))
+}
+
+impl BootstrapResolver {
+    fn new(servers: Vec<SocketAddr>) -> Self {
+        Self {
+            servers: servers.into(),
+        }
+    }
+
+    async fn resolve_socket_addrs(&self, host: &str, port: u16) -> Result<Vec<SocketAddr>> {
+        if let Ok(ip) = host.parse::<IpAddr>() {
+            return Ok(vec![SocketAddr::new(ip, port)]);
+        }
+        let domain = normalize_domain(host)?;
+        let mut last_error = None;
+        for server in self.servers.iter() {
+            let mut ips = Vec::new();
+            for qtype in [TYPE_A, TYPE_AAAA] {
+                match bootstrap_lookup(server, &domain, qtype).await {
+                    Ok(mut found) => ips.append(&mut found),
+                    Err(err) => last_error = Some(err),
+                }
+            }
+            if !ips.is_empty() {
+                return Ok(ips
+                    .into_iter()
+                    .map(|ip| SocketAddr::new(ip, port))
+                    .collect());
+            }
+        }
+        Err(last_error.unwrap_or_else(|| anyhow!("bootstrap DNS returned no addresses for {host}")))
+    }
+}
+
+impl reqwest::dns::Resolve for BootstrapResolver {
+    fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
+        let resolver = self.clone();
+        let host = name.as_str().to_string();
+        Box::pin(async move {
+            let addrs = resolver
+                .resolve_socket_addrs(&host, 0)
+                .await
+                .map_err(|err| -> Box<dyn StdError + Send + Sync> { err.into() })?;
+            let addrs: reqwest::dns::Addrs = Box::new(addrs.into_iter());
+            Ok(addrs)
+        })
+    }
+}
+
+async fn bootstrap_lookup(server: &SocketAddr, domain: &str, qtype: u16) -> Result<Vec<IpAddr>> {
+    let bind_addr = if server.is_ipv4() {
+        SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0)
+    } else {
+        SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 0)
+    };
+    let socket = UdpSocket::bind(bind_addr).await?;
+    let req = build_query(domain, qtype);
+    socket.send_to(&req, server).await?;
+    let mut buf = [0u8; 4096];
+    let (len, _) = tokio::time::timeout(BOOTSTRAP_LOOKUP_TIMEOUT, socket.recv_from(&mut buf))
+        .await
+        .context("bootstrap DNS timeout")??;
+    bootstrap_response_ips(&buf[..len], qtype)
+}
+
+fn bootstrap_response_ips(resp: &[u8], qtype: u16) -> Result<Vec<IpAddr>> {
+    let msg = DnsMessage::from_vec(resp).context("decode bootstrap DNS response")?;
+    if !matches!(rcode(resp), Some(RCODE_SUCCESS)) {
+        return Ok(Vec::new());
+    }
+    Ok(msg
+        .answers
+        .iter()
+        .filter(|record| u16::from(record.record_type()) == qtype)
+        .filter_map(|record| format_hickory_rdata(&record.data).parse::<IpAddr>().ok())
+        .collect())
 }
 
 impl UdpUpstreamClient {
@@ -1584,7 +1746,7 @@ impl UdpUpstreamClient {
         Ok(client)
     }
 
-    async fn exchange(&self, addr: &str, req: &[u8]) -> Result<Vec<u8>> {
+    async fn exchange(&self, addr: SocketAddr, req: &[u8]) -> Result<Vec<u8>> {
         let original_id = dns_message_id(req).ok_or_else(|| anyhow!("dns query is too short"))?;
         let local_id = self.allocate_id();
         let mut upstream_req = req.to_vec();
@@ -1759,11 +1921,28 @@ impl LenPrefixedUpstreamClient {
 }
 
 impl DoqUpstreamClient {
-    async fn connect(endpoint: &Endpoint) -> Result<Arc<Self>> {
-        let remote: SocketAddr = endpoint
-            .address
-            .parse()
-            .with_context(|| format!("parse DoQ remote address {}", endpoint.address))?;
+    async fn connect(
+        endpoint: &Endpoint,
+        bootstrap: Option<&BootstrapResolver>,
+    ) -> Result<Arc<Self>> {
+        let remote = if let Some(bootstrap) = bootstrap {
+            bootstrap
+                .resolve_socket_addrs(&endpoint.host, endpoint.port)
+                .await?
+                .into_iter()
+                .next()
+                .ok_or_else(|| {
+                    anyhow!(
+                        "resolve DoQ upstream {} returned no addresses",
+                        endpoint.host
+                    )
+                })?
+        } else {
+            endpoint
+                .address
+                .parse()
+                .with_context(|| format!("parse DoQ remote address {}", endpoint.address))?
+        };
         let mut quic_endpoint = quinn::Endpoint::client("0.0.0.0:0".parse()?)?;
         quic_endpoint.set_default_client_config(doq_client_config()?);
         let connection = quic_endpoint
@@ -2612,7 +2791,11 @@ pub(crate) fn compile_routes(raw_rules: &[String], upstreams: &HashSet<String>) 
 
 impl Routes {
     // `domain` must already be normalized; parsing computes it once per query.
-    fn select<'a>(&'a self, domain: &str, defaults: &'a [String]) -> (i32, &'a [String]) {
+    pub(crate) fn select<'a>(
+        &'a self,
+        domain: &str,
+        defaults: &'a [String],
+    ) -> (i32, &'a [String]) {
         if let Some(entry) = self.exact.get(domain) {
             return (entry.id, &entry.upstreams);
         }
@@ -3037,6 +3220,23 @@ fn answer_count(resp: &[u8]) -> Option<u16> {
     (resp.len() >= 8).then(|| u16::from_be_bytes([resp[6], resp[7]]))
 }
 
+fn answer_min_ttl(resp: &[u8]) -> Result<Option<u32>> {
+    let ttl_offsets = section_ttl_offsets(resp, true)?;
+    Ok(ttl_offsets
+        .into_iter()
+        .filter_map(|offset| {
+            (offset + 4 <= resp.len()).then(|| {
+                u32::from_be_bytes([
+                    resp[offset],
+                    resp[offset + 1],
+                    resp[offset + 2],
+                    resp[offset + 3],
+                ])
+            })
+        })
+        .min())
+}
+
 fn strip_aaaa_records(resp: &[u8]) -> Result<Vec<u8>> {
     let mut msg = DnsMessage::from_vec(resp).context("decode dns response")?;
     msg.answers
@@ -3136,15 +3336,23 @@ fn rewrite_ttls(
 }
 
 fn rr_ttl_offsets(resp: &[u8]) -> Result<Vec<usize>> {
+    section_ttl_offsets(resp, false)
+}
+
+fn section_ttl_offsets(resp: &[u8], answers_only: bool) -> Result<Vec<usize>> {
     if resp.len() < 12 {
         return Err(anyhow!("dns response is too short"));
     }
     let qdcount = u16::from_be_bytes([resp[4], resp[5]]) as usize;
-    let counts = [
+    let mut counts = [
         u16::from_be_bytes([resp[6], resp[7]]) as usize,
         u16::from_be_bytes([resp[8], resp[9]]) as usize,
         u16::from_be_bytes([resp[10], resp[11]]) as usize,
     ];
+    if answers_only {
+        counts[1] = 0;
+        counts[2] = 0;
+    }
     let mut offset = 12;
     for _ in 0..qdcount {
         offset = skip_dns_name(resp, offset)?;

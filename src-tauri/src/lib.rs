@@ -46,6 +46,9 @@ pub(crate) struct WindowReadyState {
 
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            let _ = reveal_main_window(app);
+        }))
         .plugin(tauri_plugin_dialog::init())
         .manage(DesktopService::new())
         .manage(WindowReadyState::default())
@@ -57,13 +60,20 @@ pub fn run() {
                 move || schedule_desktop_status(app_handle.clone(), pending_status_emit.clone())
             });
             schedule_startup_window_fallback(app.handle().clone());
-            if let Err(err) = app.state::<DesktopService>().initialize() {
-                app.state::<DesktopService>()
-                    .record_error("initialize local database", &err.to_string());
-            }
+            let initialized = match app.state::<DesktopService>().initialize() {
+                Ok(()) => true,
+                Err(err) => {
+                    app.state::<DesktopService>()
+                        .record_error("initialize local database", &err.to_string());
+                    false
+                }
+            };
             if let Err(err) = setup_tray(app) {
                 app.state::<DesktopService>()
                     .record_error("initialize tray icon", &err.to_string());
+            }
+            if initialized && app.state::<DesktopService>().service_enabled() {
+                schedule_service_autostart(app.handle().clone());
             }
             Ok(())
         })
@@ -300,5 +310,16 @@ fn schedule_startup_window_fallback(app: tauri::AppHandle) {
             return;
         }
         let _ = reveal_main_window(&app);
+    });
+}
+
+fn schedule_service_autostart(app: tauri::AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        let service = app.state::<DesktopService>();
+        if let Err(err) = service.start(String::new()).await {
+            service.record_error("auto start DNS service", &err.to_string());
+        }
+        refresh_tray_state(&app);
+        emit_desktop_status(&app);
     });
 }

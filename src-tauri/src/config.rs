@@ -35,6 +35,8 @@ pub struct CoreResolverConfig {
     #[serde(default)]
     pub proxies: Vec<CoreProxyConfig>,
     #[serde(default)]
+    pub bootstrap_dns: Vec<String>,
+    #[serde(default)]
     pub default_proxy: String,
     #[serde(default)]
     pub hosts: Vec<String>,
@@ -136,6 +138,7 @@ pub fn default_local_config() -> CoreConfig {
                     ..Default::default()
                 },
             ],
+            bootstrap_dns: default_bootstrap_dns(),
             ipv6_enabled: true,
             ..Default::default()
         },
@@ -177,6 +180,7 @@ pub fn desktop_config_from_core(cfg: &CoreConfig) -> DesktopConfig {
                 .iter()
                 .map(desktop_proxy_from_core)
                 .collect(),
+            bootstrap_dns: cfg.resolver.bootstrap_dns.clone(),
             default_proxy: cfg.resolver.default_proxy.clone(),
             hosts: cfg.resolver.hosts.clone(),
             host_statuses: Vec::new(),
@@ -244,6 +248,7 @@ pub fn core_config_from_desktop(cfg: DesktopConfig) -> CoreConfig {
                     }
                 })
                 .collect(),
+            bootstrap_dns: cfg.resolver.bootstrap_dns,
             default_proxy: cfg.resolver.default_proxy,
             hosts: cfg.resolver.hosts,
             routes: cfg.resolver.routes,
@@ -275,6 +280,10 @@ pub fn core_config_from_desktop(cfg: DesktopConfig) -> CoreConfig {
 
 fn default_true() -> bool {
     true
+}
+
+pub(crate) fn default_bootstrap_dns() -> Vec<String> {
+    vec!["1.1.1.1:53".into(), "8.8.8.8:53".into()]
 }
 
 fn desktop_upstream_from_core(item: &CoreUpstreamConfig) -> DesktopUpstreamConfig {
@@ -483,6 +492,14 @@ impl CoreConfig {
         if self.resolver.upstreams.is_empty() {
             return Err(anyhow!("resolver.upstreams must not be empty"));
         }
+        let bootstrap_dns = parse_bootstrap_dns_servers(&self.resolver.bootstrap_dns)?;
+        for server in &bootstrap_dns {
+            if socket_points_to_listener(&self.server.listen, server) {
+                return Err(anyhow!(
+                    "resolver.bootstrap_dns must not point to server.listen"
+                ));
+            }
+        }
 
         let proxies = compile_proxy_definitions(&self.resolver.proxies)?;
         if !self.resolver.default_proxy.is_empty()
@@ -525,7 +542,14 @@ impl CoreConfig {
                 ));
             }
         }
-        crate::dns::compile_routes(&self.resolver.routes, &names)?;
+        let routes = crate::dns::compile_routes(&self.resolver.routes, &names)?;
+        if bootstrap_dns.is_empty() {
+            validate_domain_upstreams_have_bootstrap(
+                &self.resolver.upstreams,
+                &self.resolver.default_proxy,
+                &routes,
+            )?;
+        }
         crate::dns::compile_hosts(&self.resolver.hosts)?;
 
         if !self.resolver.timeout.is_empty() && parse_go_duration(&self.resolver.timeout)?.is_zero()
@@ -584,6 +608,86 @@ impl CoreConfig {
     }
 }
 
+pub(crate) fn parse_bootstrap_dns_servers(items: &[String]) -> Result<Vec<SocketAddr>> {
+    items
+        .iter()
+        .enumerate()
+        .filter_map(|(index, raw)| {
+            let value = raw.trim();
+            (!value.is_empty()).then_some((index, value))
+        })
+        .map(|(index, value)| parse_bootstrap_dns_server(index, value))
+        .collect()
+}
+
+fn parse_bootstrap_dns_server(index: usize, value: &str) -> Result<SocketAddr> {
+    if let Ok(addr) = value.parse::<SocketAddr>() {
+        return Ok(addr);
+    }
+    if let Ok(ip) = value.parse::<IpAddr>() {
+        return Ok(SocketAddr::new(ip, 53));
+    }
+    Err(anyhow!(
+        "resolver.bootstrap_dns[{}] must be an IP address with optional port",
+        index
+    ))
+}
+
+fn validate_domain_upstreams_have_bootstrap(
+    upstreams: &[CoreUpstreamConfig],
+    default_proxy: &str,
+    routes: &crate::dns::Routes,
+) -> Result<()> {
+    let defaults = upstreams
+        .iter()
+        .map(|item| item.name.clone())
+        .collect::<Vec<_>>();
+    for upstream in upstreams {
+        if effective_proxy(upstream, default_proxy).is_some() {
+            continue;
+        }
+        let url = parse_upstream_endpoint(&upstream.endpoint)?;
+        let Some(host) = url.host_str() else {
+            continue;
+        };
+        if host.parse::<IpAddr>().is_ok() {
+            continue;
+        }
+        let domain = normalize_route_domain(host)?;
+        let (_, selected) = routes.select(&domain, &defaults);
+        if selected.iter().any(|name| name == &upstream.name) {
+            return Err(anyhow!(
+                "resolver.bootstrap_dns is required because upstream {:?} uses domain host {:?} that would be resolved through itself",
+                upstream.name,
+                host
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn effective_proxy<'a>(
+    upstream: &'a CoreUpstreamConfig,
+    default_proxy: &'a str,
+) -> Option<&'a str> {
+    let value = if upstream.proxy.trim().is_empty() {
+        default_proxy.trim()
+    } else {
+        upstream.proxy.trim()
+    };
+    (!value.is_empty()).then_some(value)
+}
+
+fn normalize_route_domain(host: &str) -> Result<String> {
+    let trimmed = host.trim().trim_end_matches('.');
+    if trimmed.is_empty() {
+        return Err(anyhow!("domain must not be empty"));
+    }
+    idna::domain_to_ascii(trimmed)
+        .map(|domain| domain.to_ascii_lowercase())
+        .map_err(|_| anyhow!("invalid IDNA domain"))
+}
+
 fn upstream_points_to_listener(listen: &str, endpoint: &Url) -> bool {
     let Ok(listener) = listen.trim().parse::<SocketAddr>() else {
         return false;
@@ -600,6 +704,13 @@ fn upstream_points_to_listener(listen: &str, endpoint: &Url) -> bool {
     upstream_ips
         .into_iter()
         .any(|upstream_ip| addresses_overlap(listener.ip(), upstream_ip))
+}
+
+fn socket_points_to_listener(listen: &str, socket: &SocketAddr) -> bool {
+    let Ok(listener) = listen.trim().parse::<SocketAddr>() else {
+        return false;
+    };
+    socket.port() == listener.port() && addresses_overlap(listener.ip(), socket.ip())
 }
 
 fn endpoint_port(endpoint: &Url) -> Option<u16> {
@@ -848,5 +959,48 @@ mod tests {
 
         cfg.validate()
             .expect("public upstream is not the local listener");
+    }
+
+    #[test]
+    fn validate_rejects_domain_upstream_without_bootstrap_when_it_selects_itself() {
+        let mut cfg = config_with_listener_and_upstream(
+            "127.0.0.1:15353",
+            "https://doh.example.com/dns-query",
+        );
+        cfg.resolver.bootstrap_dns.clear();
+        cfg.resolver.routes = vec!["exact:doh.example.com=test".into()];
+
+        let err = cfg
+            .validate()
+            .expect_err("domain upstream would resolve through itself");
+
+        assert!(err
+            .to_string()
+            .contains("resolver.bootstrap_dns is required"));
+    }
+
+    #[test]
+    fn validate_allows_domain_upstream_with_bootstrap() {
+        let mut cfg = config_with_listener_and_upstream(
+            "127.0.0.1:15353",
+            "https://doh.example.com/dns-query",
+        );
+        cfg.resolver.routes = vec!["exact:doh.example.com=test".into()];
+
+        cfg.validate().expect("bootstrap avoids self resolution");
+    }
+
+    #[test]
+    fn validate_rejects_bootstrap_pointing_to_listener() {
+        let mut cfg = config_with_listener_and_upstream("127.0.0.1:15353", "udp://1.1.1.1:53");
+        cfg.resolver.bootstrap_dns = vec!["127.0.0.1:15353".into()];
+
+        let err = cfg
+            .validate()
+            .expect_err("bootstrap points back to listener");
+
+        assert!(err
+            .to_string()
+            .contains("resolver.bootstrap_dns must not point to server.listen"));
     }
 }

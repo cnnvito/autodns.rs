@@ -78,6 +78,14 @@ impl ConfigStore {
         self.with_conn(|conn| replace_config(conn, config))
     }
 
+    pub fn service_enabled(&self) -> Result<bool> {
+        self.with_conn(load_service_enabled)
+    }
+
+    pub fn save_service_enabled(&self, enabled: bool) -> Result<()> {
+        self.with_conn(|conn| save_service_enabled(conn, enabled))
+    }
+
     pub fn validate_config(&self, config: DesktopConfig) -> Result<()> {
         validate_store_config(&config)
     }
@@ -169,6 +177,8 @@ fn migrate(conn: &Connection) -> Result<()> {
             server_cert_file TEXT NOT NULL DEFAULT '',
             server_key_file TEXT NOT NULL DEFAULT '',
             server_path TEXT NOT NULL DEFAULT '',
+            service_enabled INTEGER NOT NULL DEFAULT 0,
+            bootstrap_dns TEXT NOT NULL DEFAULT '["1.1.1.1:53","8.8.8.8:53"]',
             default_proxy TEXT NOT NULL DEFAULT '',
             resolver_timeout TEXT NOT NULL DEFAULT '',
             ipv6_enabled INTEGER NOT NULL DEFAULT 1,
@@ -276,6 +286,7 @@ fn migrate(conn: &Connection) -> Result<()> {
             duration_ms INTEGER NOT NULL,
             attempt_count INTEGER NOT NULL,
             response_code TEXT NOT NULL,
+            min_ttl INTEGER,
             error TEXT NOT NULL DEFAULT '',
             created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
@@ -295,6 +306,18 @@ fn migrate(conn: &Connection) -> Result<()> {
         "ipv6_enabled",
         "INTEGER NOT NULL DEFAULT 1",
     )?;
+    add_column_if_missing(
+        conn,
+        "app_settings",
+        "bootstrap_dns",
+        r#"TEXT NOT NULL DEFAULT '["1.1.1.1:53","8.8.8.8:53"]'"#,
+    )?;
+    add_column_if_missing(
+        conn,
+        "app_settings",
+        "service_enabled",
+        "INTEGER NOT NULL DEFAULT 0",
+    )?;
     add_column_if_missing(conn, "proxies", "protocol", "TEXT NOT NULL DEFAULT ''")?;
     add_column_if_missing(conn, "proxies", "host", "TEXT NOT NULL DEFAULT ''")?;
     add_column_if_missing(conn, "proxies", "port", "INTEGER")?;
@@ -304,6 +327,7 @@ fn migrate(conn: &Connection) -> Result<()> {
     add_column_if_missing(conn, "upstreams", "path", "TEXT NOT NULL DEFAULT ''")?;
     drop_column_if_exists(conn, "dns_query_history", "results_json")?;
     drop_column_if_exists(conn, "dns_query_history", "answer_count")?;
+    add_column_if_missing(conn, "dns_query_history", "min_ttl", "INTEGER")?;
     drop_column_if_exists(conn, "app_settings", "fallback_system_dns")?;
     drop_column_if_exists(conn, "proxies", "endpoint")?;
     drop_column_if_exists(conn, "upstreams", "endpoint")?;
@@ -372,6 +396,7 @@ fn drop_column_if_exists(conn: &Connection, table: &str, column: &str) -> Result
 }
 
 fn replace_config(conn: &mut Connection, config: DesktopConfig) -> Result<()> {
+    let service_enabled = load_service_enabled(conn).unwrap_or(false);
     let tx = conn.transaction().context("begin config transaction")?;
     tx.execute_batch(
         r#"
@@ -389,13 +414,13 @@ fn replace_config(conn: &mut Connection, config: DesktopConfig) -> Result<()> {
         r#"
         INSERT INTO app_settings (
             id, server_mode, server_listen, server_cert_file, server_key_file, server_path,
-            default_proxy, resolver_timeout, ipv6_enabled,
+            service_enabled, bootstrap_dns, default_proxy, resolver_timeout, ipv6_enabled,
             cache_enabled, cache_max_entries, cache_max_entry_size, cache_min_ttl, cache_max_ttl,
             cache_negative_ttl, cache_eviction_policy,
             healthcheck_enabled, healthcheck_interval, healthcheck_timeout, healthcheck_domain,
             healthcheck_failure_threshold, healthcheck_recovery_threshold, log_level
         )
-        VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         "#,
         params![
             config.server.mode,
@@ -403,6 +428,9 @@ fn replace_config(conn: &mut Connection, config: DesktopConfig) -> Result<()> {
             config.server.cert_file,
             config.server.key_file,
             config.server.path,
+            bool_to_i64(service_enabled),
+            serde_json::to_string(&config.resolver.bootstrap_dns)
+                .context("serialize bootstrap dns")?,
             config.resolver.default_proxy,
             config.resolver.timeout,
             bool_to_i64(config.resolver.ipv6_enabled),
@@ -552,6 +580,25 @@ fn load_desktop_config(conn: &Connection) -> Result<DesktopConfig> {
     Ok(cfg)
 }
 
+fn load_service_enabled(conn: &mut Connection) -> Result<bool> {
+    conn.query_row(
+        "SELECT service_enabled FROM app_settings WHERE id = 1",
+        [],
+        |row| row.get::<_, i64>(0),
+    )
+    .map(int_to_bool)
+    .context("load service enabled state")
+}
+
+fn save_service_enabled(conn: &mut Connection, enabled: bool) -> Result<()> {
+    conn.execute(
+        "UPDATE app_settings SET service_enabled = ?, updated_at = CURRENT_TIMESTAMP WHERE id = 1",
+        params![bool_to_i64(enabled)],
+    )
+    .context("save service enabled state")?;
+    Ok(())
+}
+
 fn load_runtime_config(conn: &Connection) -> Result<CoreConfig> {
     let mut desktop = load_desktop_config(conn)?;
     desktop.resolver.hosts = load_desktop_hosts(conn, true)?;
@@ -567,7 +614,7 @@ fn load_settings(conn: &Connection) -> Result<DesktopConfig> {
             r#"
         SELECT
             server_mode, server_listen, server_cert_file, server_key_file, server_path,
-            default_proxy, resolver_timeout, ipv6_enabled,
+            bootstrap_dns, default_proxy, resolver_timeout, ipv6_enabled,
             cache_enabled, cache_max_entries, cache_max_entry_size, cache_min_ttl, cache_max_ttl,
             cache_negative_ttl, cache_eviction_policy,
             healthcheck_enabled, healthcheck_interval, healthcheck_timeout, healthcheck_domain,
@@ -587,33 +634,42 @@ fn load_settings(conn: &Connection) -> Result<DesktopConfig> {
                     resolver: crate::desktop::DesktopResolverConfig {
                         upstreams: Vec::new(),
                         proxies: Vec::new(),
-                        default_proxy: row.get(5)?,
+                        bootstrap_dns: {
+                            let raw: String = row.get(5)?;
+                            let parsed = json_vec_from_sql(&raw)?;
+                            if parsed.is_empty() {
+                                Vec::new()
+                            } else {
+                                parsed
+                            }
+                        },
+                        default_proxy: row.get(6)?,
                         hosts: Vec::new(),
                         host_statuses: Vec::new(),
                         routes: Vec::new(),
                         route_statuses: Vec::new(),
-                        timeout: row.get(6)?,
-                        ipv6_enabled: int_to_bool(row.get(7)?),
+                        timeout: row.get(7)?,
+                        ipv6_enabled: int_to_bool(row.get(8)?),
                     },
                     cache: crate::desktop::DesktopCacheConfig {
-                        enabled: int_to_bool(row.get(8)?),
-                        max_entries: i64_to_usize(row.get(9)?)?,
-                        max_entry_size: i64_to_usize(row.get(10)?)?,
-                        min_ttl: i64_to_u32(row.get(11)?)?,
-                        max_ttl: i64_to_u32(row.get(12)?)?,
-                        negative_ttl: i64_to_u32(row.get(13)?)?,
-                        eviction_policy: row.get(14)?,
+                        enabled: int_to_bool(row.get(9)?),
+                        max_entries: i64_to_usize(row.get(10)?)?,
+                        max_entry_size: i64_to_usize(row.get(11)?)?,
+                        min_ttl: i64_to_u32(row.get(12)?)?,
+                        max_ttl: i64_to_u32(row.get(13)?)?,
+                        negative_ttl: i64_to_u32(row.get(14)?)?,
+                        eviction_policy: row.get(15)?,
                     },
                     healthcheck: crate::desktop::DesktopHealthcheckConfig {
-                        enabled: int_to_bool(row.get(15)?),
-                        interval: row.get(16)?,
-                        timeout: row.get(17)?,
-                        domain: row.get(18)?,
-                        failure_threshold: i64_to_u32(row.get(19)?)?,
-                        recovery_threshold: i64_to_u32(row.get(20)?)?,
+                        enabled: int_to_bool(row.get(16)?),
+                        interval: row.get(17)?,
+                        timeout: row.get(18)?,
+                        domain: row.get(19)?,
+                        failure_threshold: i64_to_u32(row.get(20)?)?,
+                        recovery_threshold: i64_to_u32(row.get(21)?)?,
                     },
                     log: crate::desktop::DesktopLogConfig {
-                        level: row.get(21)?,
+                        level: row.get(22)?,
                     },
                 })
             },
@@ -1039,9 +1095,9 @@ fn insert_dns_history(conn: &mut Connection, events: &[DnsHistoryEvent]) -> Resu
             INSERT INTO dns_query_history (
                 started_at, domain, record_type, qclass, source, route_id,
                 upstream_name, upstream_protocol, duration_ms, attempt_count,
-                response_code, error
+                response_code, min_ttl, error
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#,
         )?;
         for event in events {
@@ -1057,6 +1113,7 @@ fn insert_dns_history(conn: &mut Connection, events: &[DnsHistoryEvent]) -> Resu
                 u128_to_i64(event.duration_ms)?,
                 usize_to_i64(event.attempt_count)?,
                 &event.response_code,
+                event.min_ttl.map(u32_to_i64),
                 &event.error,
             ])
             .context("insert dns history")?;
@@ -1089,7 +1146,7 @@ fn list_dns_history(
         SELECT
             id, started_at, domain, record_type, source, route_id,
             upstream_name, upstream_protocol, duration_ms, attempt_count,
-            response_code, error
+            response_code, min_ttl, error
         FROM dns_query_history
         WHERE (?1 = '' OR lower(domain) LIKE '%' || lower(?1) || '%')
         ORDER BY started_at DESC, id DESC
@@ -1111,7 +1168,8 @@ fn list_dns_history(
                 duration_ms: i64_to_u128(row.get(8)?)?,
                 attempt_count: i64_to_usize(row.get(9)?)?,
                 response_code: row.get(10)?,
-                error: row.get(11)?,
+                min_ttl: row.get::<_, Option<i64>>(11)?.map(i64_to_u32).transpose()?,
+                error: row.get(12)?,
             })
         },
     )?;
@@ -1246,4 +1304,69 @@ fn i64_to_u128(value: i64) -> rusqlite::Result<u128> {
 
 fn u128_to_i64(value: u128) -> Result<i64> {
     i64::try_from(value).context("integer is too large")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn service_enabled_survives_config_save() {
+        let path = temp_store_path("state");
+        let store = ConfigStore::open(path.clone()).expect("open config store");
+
+        assert!(!store.service_enabled().expect("load initial state"));
+        store
+            .save_service_enabled(true)
+            .expect("save service enabled");
+        store
+            .save_config(desktop_config_from_core(&default_local_config()))
+            .expect("save config");
+        assert!(store.service_enabled().expect("load saved state"));
+
+        drop(store);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn dns_history_persists_min_ttl() {
+        let path = temp_store_path("history");
+        let store = ConfigStore::open(path.clone()).expect("open config store");
+
+        store
+            .insert_dns_history(&[DnsHistoryEvent {
+                started_at: Utc::now().to_rfc3339(),
+                domain: "ttl.example".into(),
+                record_type: "A".into(),
+                qclass: 1,
+                source: "upstream".into(),
+                route_id: 0,
+                upstream_name: "test".into(),
+                upstream_protocol: "udp".into(),
+                duration_ms: 12,
+                attempt_count: 1,
+                response_code: "NOERROR".into(),
+                min_ttl: Some(42),
+                error: String::new(),
+            }])
+            .expect("insert history");
+
+        let history = store
+            .list_dns_history("ttl.example", 10, 0)
+            .expect("load history");
+
+        assert_eq!(history.items.len(), 1);
+        assert_eq!(history.items[0].min_ttl, Some(42));
+
+        drop(store);
+        let _ = std::fs::remove_file(path);
+    }
+
+    fn temp_store_path(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "autodns-store-{name}-{}-{}.sqlite3",
+            std::process::id(),
+            Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        ))
+    }
 }

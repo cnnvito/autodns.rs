@@ -67,6 +67,12 @@ impl DesktopService {
         Ok(())
     }
 
+    pub fn service_enabled(&self) -> bool {
+        self.store()
+            .and_then(|store| store.service_enabled())
+            .unwrap_or(false)
+    }
+
     pub async fn start(&self, _config_path: String) -> Result<()> {
         {
             let inner = self.inner.lock();
@@ -99,6 +105,10 @@ impl DesktopService {
         let mut inner = self.inner.lock();
         inner.status = status;
         inner.runtime = Some(runtime);
+        if let Err(err) = self.store()?.save_service_enabled(true) {
+            self.logs
+                .push("warn", format!("save service enabled state failed: {err}"));
+        }
         self.logs.push(
             "info",
             format!("desktop runtime started on {}", core.server.listen),
@@ -110,6 +120,10 @@ impl DesktopService {
         let runtime = {
             let mut inner = self.inner.lock();
             if !inner.status.running {
+                if let Err(err) = self.store()?.save_service_enabled(false) {
+                    self.logs
+                        .push("warn", format!("save service enabled state failed: {err}"));
+                }
                 return Ok(());
             }
             let runtime = inner.runtime.take();
@@ -122,6 +136,10 @@ impl DesktopService {
         };
         if let Some(runtime) = runtime {
             runtime.stop().await;
+        }
+        if let Err(err) = self.store()?.save_service_enabled(false) {
+            self.logs
+                .push("warn", format!("save service enabled state failed: {err}"));
         }
         self.logs.push("info", "desktop runtime stopped");
         Ok(())
