@@ -40,6 +40,33 @@ export type DnsLookupRecord = {
   value: string;
 };
 
+export type DnsHistoryList = {
+  items: DnsHistoryEntry[];
+  total: number;
+};
+
+export type DnsHistoryEntry = {
+  id: number;
+  startedAt: string;
+  domain: string;
+  recordType: string;
+  source: string;
+  routeId: number;
+  upstreamName: string;
+  upstreamProtocol: string;
+  durationMs: number;
+  attemptCount: number;
+  responseCode: string;
+  error: string;
+};
+
+export type DnsHistoryTopDomain = {
+  domain: string;
+  count: number;
+  lastSeenAt: string;
+  averageDurationMs: number;
+};
+
 export type DesktopConfig = {
   server: ServerConfig;
   resolver: ResolverConfig;

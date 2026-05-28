@@ -1,5 +1,6 @@
 use crate::config::{parse_go_duration, parse_upstream_endpoint, CoreConfig, CoreUpstreamConfig};
 use crate::desktop::{DnsLookupRecord, DnsLookupResult, HealthState, ProxyHealth, UpstreamHealth};
+use crate::history::{DnsHistoryEvent, DnsHistoryRecorder};
 use crate::logging::LogBuffer;
 use anyhow::{anyhow, Context, Result};
 use arc_swap::ArcSwap;
@@ -80,7 +81,8 @@ impl RunningRuntime {
         if !self.can_reload(&cfg) {
             return Err(anyhow!("listener settings changed"));
         }
-        let resolver = build_resolver(&cfg, logs.clone())?;
+        let history = self.state.resolver().history.clone();
+        let resolver = build_resolver(&cfg, logs.clone(), history)?;
         let view = RuntimeView {
             config: cfg.clone(),
             health: resolver.health.clone(),
@@ -150,6 +152,7 @@ pub(crate) struct Resolver {
     hosts: Hosts,
     routes: Routes,
     cache: DnsCache,
+    history: DnsHistoryRecorder,
     clients: HashMap<String, UpstreamClient>,
     health: Arc<HealthMonitor>,
     timeout: Option<Duration>,
@@ -288,6 +291,14 @@ struct CacheEntry {
     expires_at: Instant,
     original_ttls: Vec<u32>,
     ttl_offsets: Vec<usize>,
+    upstream_name: String,
+    upstream_protocol: String,
+}
+
+struct CachedResponse {
+    response: Vec<u8>,
+    upstream_name: String,
+    upstream_protocol: String,
 }
 
 #[derive(Clone)]
@@ -337,8 +348,19 @@ struct Question {
     checking_disabled: bool,
 }
 
-pub async fn start_runtime(cfg: CoreConfig, logs: LogBuffer) -> Result<RunningRuntime> {
-    let resolver = build_resolver(&cfg, logs.clone())?;
+struct NegativeResponse {
+    response: Vec<u8>,
+    upstream_name: String,
+    upstream_protocol: String,
+    error: String,
+}
+
+pub async fn start_runtime(
+    cfg: CoreConfig,
+    logs: LogBuffer,
+    history: DnsHistoryRecorder,
+) -> Result<RunningRuntime> {
+    let resolver = build_resolver(&cfg, logs.clone(), history)?;
     let view = RuntimeView {
         config: cfg.clone(),
         health: resolver.health.clone(),
@@ -467,7 +489,11 @@ fn same_server_identity(a: &CoreConfig, b: &CoreConfig) -> bool {
         && a.server.path == b.server.path
 }
 
-fn build_resolver(cfg: &CoreConfig, logs: LogBuffer) -> Result<Resolver> {
+fn build_resolver(
+    cfg: &CoreConfig,
+    logs: LogBuffer,
+    history: DnsHistoryRecorder,
+) -> Result<Resolver> {
     let proxies = cfg
         .resolver
         .proxies
@@ -538,6 +564,7 @@ fn build_resolver(cfg: &CoreConfig, logs: LogBuffer) -> Result<Resolver> {
                 .collect::<HashSet<_>>(),
         )?,
         cache: DnsCache::new(cfg),
+        history,
         clients,
         health,
         timeout: if cfg.resolver.timeout.is_empty() {
@@ -1022,6 +1049,8 @@ impl Resolver {
     }
 
     async fn resolve(&self, req: Vec<u8>) -> std::result::Result<Vec<u8>, Vec<u8>> {
+        let history_started_at = Utc::now().to_rfc3339();
+        let history_started = Instant::now();
         let debug_logs = self.logs.debug_enabled();
         let question = match parse_question(&req) {
             Ok(question) => question,
@@ -1042,7 +1071,20 @@ impl Resolver {
                     format!("dns query {qname} {qtype} answered locally because IPv6 is disabled"),
                 );
             }
-            return Ok(empty_success_response(&question));
+            let resp = empty_success_response(&question);
+            self.record_history_response(
+                &question,
+                &history_started_at,
+                history_started.elapsed(),
+                "local",
+                -1,
+                "",
+                "",
+                0,
+                &resp,
+                "",
+            );
+            return Ok(resp);
         }
         if let Some(resp) = self.resolve_hosts(&question) {
             if debug_logs {
@@ -1051,6 +1093,18 @@ impl Resolver {
                     format!("dns query {qname} {qtype} answered from hosts"),
                 );
             }
+            self.record_history_response(
+                &question,
+                &history_started_at,
+                history_started.elapsed(),
+                "hosts",
+                -1,
+                "",
+                "",
+                0,
+                &resp,
+                "",
+            );
             return Ok(resp);
         }
 
@@ -1072,17 +1126,36 @@ impl Resolver {
             qclass: question.qclass,
             route_id,
         };
-        if let Some(resp) = self.cache.get(&key, question.id) {
+        if let Some(cached) = self.cache.get(&key, question.id) {
             if debug_logs {
                 self.logs.push(
                     "debug",
                     format!("dns query {qname} {qtype} route {route_id} answered from cache"),
                 );
             }
-            return Ok(resp);
+            self.record_history_response(
+                &question,
+                &history_started_at,
+                history_started.elapsed(),
+                "cache",
+                route_id,
+                &cached.upstream_name,
+                &cached.upstream_protocol,
+                0,
+                &cached.response,
+                "",
+            );
+            return Ok(cached.response);
         }
 
+        // Upstreams are intentionally tried in configured order. A negative response
+        // (NOERROR with no answers, or NXDOMAIN) is not final here: later upstreams may
+        // still have an answer for split-horizon, geo, or policy-routed domains. Keep the
+        // latest negative as a fallback and only return it after every selected upstream
+        // has failed to produce an answer.
         let mut last_negative = None;
+        let mut attempt_count = 0usize;
+        let mut last_error = None;
         for name in selected.iter() {
             let Some(client) = self.clients.get(name) else {
                 if debug_logs {
@@ -1093,6 +1166,7 @@ impl Resolver {
                 }
                 continue;
             };
+            attempt_count += 1;
             let started = Instant::now();
             if debug_logs {
                 self.logs.push(
@@ -1109,7 +1183,13 @@ impl Resolver {
                     match classify(&resp) {
                         ResponseClass::Answer => {
                             self.health.record_query_success(name, started.elapsed());
-                            self.cache.set(key.clone(), &resp, false);
+                            self.cache.set(
+                                key.clone(),
+                                &resp,
+                                false,
+                                &client.name,
+                                &client.endpoint.scheme,
+                            );
                             if debug_logs {
                                 let duration_ms = started.elapsed().as_millis();
                                 let rcode_label = response_code_label(rcode(&resp));
@@ -1122,11 +1202,28 @@ impl Resolver {
                                     ),
                                 );
                             }
+                            self.record_history_response(
+                                &question,
+                                &history_started_at,
+                                history_started.elapsed(),
+                                "upstream",
+                                route_id,
+                                &client.name,
+                                &client.endpoint.scheme,
+                                attempt_count,
+                                &resp,
+                                "",
+                            );
                             return Ok(resp);
                         }
                         ResponseClass::Negative => {
-                            self.health
-                                .record_failure(name, "upstream returned no answer");
+                            let error = "upstream returned no answer";
+                            self.health.record_failure(name, error);
+                            let history_error = if rcode(&resp) == Some(RCODE_NAME_ERROR) {
+                                String::new()
+                            } else {
+                                error.to_string()
+                            };
                             if debug_logs {
                                 let duration_ms = started.elapsed().as_millis();
                                 let rcode_label = response_code_label(rcode(&resp));
@@ -1138,11 +1235,20 @@ impl Resolver {
                                     ),
                                 );
                             }
-                            last_negative = Some(resp);
+                            // Preserve this empty/NXDOMAIN result as the fallback, but keep
+                            // walking the upstream list so a later upstream can override it
+                            // with an actual answer.
+                            last_negative = Some(NegativeResponse {
+                                response: resp,
+                                upstream_name: client.name.clone(),
+                                upstream_protocol: client.endpoint.scheme.clone(),
+                                error: history_error,
+                            });
                         }
                         ResponseClass::Retry => {
-                            self.health
-                                .record_failure(name, "upstream returned retryable response");
+                            let error = "upstream returned retryable response";
+                            self.health.record_failure(name, error);
+                            last_error = Some(error.to_string());
                             if debug_logs {
                                 let duration_ms = started.elapsed().as_millis();
                                 let rcode_label = response_code_label(rcode(&resp));
@@ -1158,6 +1264,7 @@ impl Resolver {
                     }
                 }
                 Err(err) => {
+                    last_error = Some(err.to_string());
                     if debug_logs {
                         let duration_ms = started.elapsed().as_millis();
                         self.logs.push(
@@ -1173,15 +1280,36 @@ impl Resolver {
             }
         }
 
-        if let Some(resp) = last_negative {
-            self.cache.set(key, &resp, true);
+        if let Some(negative) = last_negative {
+            // No upstream returned an answer. At this point the best response is the last
+            // negative result we saw, which preserves the upstream's real RCODE instead of
+            // converting an empty result into SERVFAIL.
+            self.cache.set(
+                key,
+                &negative.response,
+                true,
+                &negative.upstream_name,
+                &negative.upstream_protocol,
+            );
             if debug_logs {
                 self.logs.push(
                     "debug",
                     format!("dns query {qname} {qtype} returning last negative response"),
                 );
             }
-            return Ok(resp);
+            self.record_history_response(
+                &question,
+                &history_started_at,
+                history_started.elapsed(),
+                "upstream",
+                route_id,
+                &negative.upstream_name,
+                &negative.upstream_protocol,
+                attempt_count,
+                &negative.response,
+                &negative.error,
+            );
+            return Ok(negative.response);
         }
         if debug_logs {
             self.logs.push(
@@ -1189,13 +1317,58 @@ impl Resolver {
                 format!("dns query {qname} {qtype} returning SERVFAIL"),
             );
         }
-        Ok(servfail_response(&req))
+        let resp = servfail_response(&req);
+        self.record_history_response(
+            &question,
+            &history_started_at,
+            history_started.elapsed(),
+            "error",
+            route_id,
+            "",
+            "",
+            attempt_count,
+            &resp,
+            last_error.as_deref().unwrap_or("all upstreams failed"),
+        );
+        Ok(resp)
+    }
+
+    fn record_history_response(
+        &self,
+        question: &Question,
+        started_at: &str,
+        duration: Duration,
+        source: &str,
+        route_id: i32,
+        upstream_name: &str,
+        upstream_protocol: &str,
+        attempt_count: usize,
+        resp: &[u8],
+        error: &str,
+    ) {
+        self.history.record(DnsHistoryEvent {
+            started_at: started_at.to_string(),
+            domain: question.normalized_qname.clone(),
+            record_type: qtype_label(question.qtype).to_string(),
+            qclass: question.qclass,
+            source: source.to_string(),
+            route_id,
+            upstream_name: upstream_name.to_string(),
+            upstream_protocol: upstream_protocol.to_string(),
+            duration_ms: duration.as_millis(),
+            attempt_count,
+            response_code: response_code_label(rcode(resp)),
+            error: error.to_string(),
+        });
     }
 
     fn filter_response(&self, resp: Vec<u8>) -> Vec<u8> {
         if self.ipv6_enabled {
             return resp;
         }
+        // Keep this response-level filter even for non-AAAA questions. Upstreams may include
+        // AAAA records alongside CNAME chains, HTTPS/SVCB answers, or additional records; when
+        // IPv6 is disabled, those embedded IPv6 addresses must be stripped before replying.
         strip_aaaa_records(&resp).unwrap_or(resp)
     }
 
@@ -2186,7 +2359,7 @@ impl DnsCache {
         len
     }
 
-    fn get(&self, key: &CacheKey, id: u16) -> Option<Vec<u8>> {
+    fn get(&self, key: &CacheKey, id: u16) -> Option<CachedResponse> {
         if !self.enabled {
             return None;
         }
@@ -2211,10 +2384,21 @@ impl DnsCache {
                 remaining,
             );
         }
-        Some(resp)
+        Some(CachedResponse {
+            response: resp,
+            upstream_name: entry.upstream_name,
+            upstream_protocol: entry.upstream_protocol,
+        })
     }
 
-    fn set(&self, key: CacheKey, resp: &[u8], negative: bool) {
+    fn set(
+        &self,
+        key: CacheKey,
+        resp: &[u8],
+        negative: bool,
+        upstream_name: &str,
+        upstream_protocol: &str,
+    ) {
         if !self.enabled || resp.len() > self.max_entry_size {
             return;
         }
@@ -2242,6 +2426,8 @@ impl DnsCache {
                 expires_at: Instant::now() + Duration::from_secs(ttl as u64),
                 original_ttls,
                 ttl_offsets,
+                upstream_name: upstream_name.to_string(),
+                upstream_protocol: upstream_protocol.to_string(),
             },
         );
     }
@@ -2770,6 +2956,9 @@ enum ResponseClass {
 }
 
 fn classify(resp: &[u8]) -> ResponseClass {
+    // Negative responses deliberately mean "try the next upstream, but remember this
+    // response as a fallback." This keeps ordered fallback semantics for domains that
+    // only exist on a later upstream.
     match (rcode(resp), answer_count(resp)) {
         (Some(RCODE_SUCCESS), Some(count)) if count > 0 => ResponseClass::Answer,
         (Some(RCODE_SUCCESS), _) | (Some(RCODE_NAME_ERROR), _) => ResponseClass::Negative,
@@ -3095,11 +3284,11 @@ mod tests {
         let key_d = cache_key("d.example");
         let resp = success_response_with_answer(1);
 
-        cache.set(key_a.clone(), &resp, false);
-        cache.set(key_b.clone(), &resp, false);
+        cache.set(key_a.clone(), &resp, false, "", "");
+        cache.set(key_b.clone(), &resp, false, "", "");
         assert!(cache.get(&key_a, 2).is_some());
-        cache.set(key_c.clone(), &resp, false);
-        cache.set(key_d.clone(), &resp, false);
+        cache.set(key_c.clone(), &resp, false, "", "");
+        cache.set(key_d.clone(), &resp, false, "", "");
 
         cache.inner.run_pending_tasks();
         assert!(cache.inner.entry_count() <= 2);
@@ -3122,11 +3311,14 @@ mod tests {
         write_a_rr_with_ttl(&mut resp, 30);
         write_a_rr_with_ttl(&mut resp, 90);
 
-        cache.set(key.clone(), &resp, false);
+        cache.set(key.clone(), &resp, false, "", "");
         let cached = cache.get(&key, 9).expect("cache hit");
-        let ttls = rr_ttls(&cached).expect("parse cached ttl");
+        let ttls = rr_ttls(&cached.response).expect("parse cached ttl");
 
-        assert_eq!(u16::from_be_bytes([cached[0], cached[1]]), 9);
+        assert_eq!(
+            u16::from_be_bytes([cached.response[0], cached.response[1]]),
+            9
+        );
         assert_eq!(ttls.len(), 2);
         assert!(ttls[0] <= 30);
         assert!(ttls[1] <= 30);

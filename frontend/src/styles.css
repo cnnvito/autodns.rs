@@ -1413,6 +1413,231 @@ h2 {
   min-width: 0;
 }
 
+.historyLayout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(280px, 340px);
+  gap: 14px;
+  align-items: start;
+  min-width: 0;
+}
+
+.historyDetailsPanel,
+.historyTopPanel {
+  width: 100%;
+}
+
+.historyToolbar {
+  display: grid;
+  grid-template-columns: minmax(260px, 460px) 92px;
+  gap: 10px;
+  align-items: end;
+}
+
+.historySearchField {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.historySearchField > span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.historySearchField > div {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 36px;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  background: var(--field-bg);
+  color: var(--muted);
+  padding: 0 10px;
+}
+
+.historySearchField input {
+  min-width: 0;
+  width: 100%;
+  border: 0;
+  outline: 0;
+  color: var(--text);
+  background: transparent;
+}
+
+.historyResultCount {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 4px;
+  min-height: 36px;
+  min-width: 0;
+  border: 1px solid var(--border-soft);
+  border-radius: 6px;
+  background: var(--surface-soft);
+  padding: 7px 10px;
+}
+
+.historyResultCount span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.historyResultCount strong {
+  color: var(--text-strong);
+  font-size: 14px;
+}
+
+.historyList {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  overflow-x: auto;
+}
+
+.historyTableHeader,
+.historyTableRow {
+  display: grid;
+  grid-template-columns: minmax(150px, 0.9fr) minmax(180px, 1.2fr) 64px 72px minmax(120px, 0.75fr) 72px 94px minmax(180px, 1.2fr);
+  gap: 8px;
+  align-items: center;
+  min-width: 980px;
+}
+
+.historyTableHeader {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 750;
+  letter-spacing: 0;
+  padding: 0 8px;
+}
+
+.historyTableRow {
+  border: 1px solid var(--border-soft);
+  border-radius: 6px;
+  background: var(--surface-soft);
+  padding: 9px 8px;
+  font-size: 12px;
+}
+
+.historyTableRow span,
+.historyTableRow strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.historyTableRow strong {
+  color: var(--text-strong);
+  font-size: 13px;
+}
+
+.historyCode {
+  color: var(--warning);
+  font-weight: 750;
+}
+
+.historyCode.ok {
+  color: var(--success);
+}
+
+.tag.source-cache {
+  background: var(--accent-live);
+  color: var(--accent-strong);
+}
+
+.tag.source-hosts,
+.tag.source-local {
+  background: var(--success-bg);
+  color: var(--success);
+}
+
+.tag.source-error {
+  background: var(--danger-bg);
+  color: var(--danger);
+}
+
+.historyMore {
+  display: flex;
+  justify-content: center;
+}
+
+.historyTopList {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.historyTopRow {
+  display: grid;
+  grid-template-columns: 26px minmax(0, 1fr) minmax(42px, auto);
+  gap: 10px;
+  align-items: center;
+  min-width: 0;
+  width: 100%;
+  min-height: 54px;
+  border: 1px solid var(--border-soft);
+  border-radius: 6px;
+  background: var(--surface-soft);
+  padding: 9px 10px;
+  color: var(--text);
+  text-align: left;
+}
+
+.historyTopRow:hover:not(:disabled) {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--surface-soft) 84%, var(--accent-live));
+}
+
+.historyTopRow > span {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 999px;
+  background: var(--neutral-bg);
+  color: var(--neutral);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.historyTopRow div {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.historyTopRow strong,
+.historyTopRow small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.historyTopRow strong {
+  color: var(--text-strong);
+  font-size: 13px;
+}
+
+.historyTopRow small {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.historyTopRow em {
+  justify-self: end;
+  color: var(--text-strong);
+  font-style: normal;
+  font-size: 16px;
+  font-weight: 800;
+}
+
 .upstreamHeaderRow {
   display: grid;
   grid-template-columns: 34px minmax(0, 1fr);
@@ -2251,8 +2476,9 @@ h2 {
   .runtimeSummaryGrid,
   .overviewFacts,
   .cacheGrid,
-  .settingsGrid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+  .settingsGrid,
+  .historyLayout {
+    grid-template-columns: 1fr;
   }
 }
 
@@ -2260,7 +2486,8 @@ h2 {
   .runtimeSummaryGrid,
   .overviewFacts,
   .cacheGrid,
-  .settingsGrid {
+  .settingsGrid,
+  .historyToolbar {
     grid-template-columns: 1fr;
   }
 

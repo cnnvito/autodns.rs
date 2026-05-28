@@ -2,6 +2,7 @@ mod commands;
 mod config;
 mod desktop;
 mod dns;
+mod history;
 mod logging;
 mod preferences;
 mod service;
@@ -92,6 +93,9 @@ pub fn run() {
             status,
             clear_dns_cache,
             lookup_domain,
+            list_dns_history,
+            dns_history_top_domains,
+            clear_dns_history,
             managed_config,
             validate_config,
             apply_config,

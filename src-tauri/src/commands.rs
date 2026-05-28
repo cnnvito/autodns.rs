@@ -1,6 +1,6 @@
 use crate::desktop::{
     ApplyConfigResult, ConfigDocument, DesktopConfig, DesktopPreferences, DesktopStatus,
-    DnsLookupResult, SystemDnsSettings, SystemDnsStatus,
+    DnsHistoryList, DnsHistoryTopDomain, DnsLookupResult, SystemDnsSettings, SystemDnsStatus,
 };
 use crate::preferences;
 use crate::service::DesktopService;
@@ -53,6 +53,51 @@ pub async fn lookup_domain(
         .lookup_domain(domain, record_type)
         .await
         .map_err(to_command_error)
+}
+
+#[tauri::command]
+pub async fn list_dns_history(
+    app: AppHandle,
+    domain: Option<String>,
+    limit: Option<usize>,
+    offset: Option<usize>,
+) -> Result<DnsHistoryList, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let service = app.state::<DesktopService>();
+        service.list_dns_history(
+            domain.unwrap_or_default(),
+            limit.unwrap_or(100),
+            offset.unwrap_or(0),
+        )
+    })
+    .await
+    .map_err(|err| err.to_string())?
+    .map_err(to_command_error)
+}
+
+#[tauri::command]
+pub async fn dns_history_top_domains(
+    app: AppHandle,
+    limit: Option<usize>,
+) -> Result<Vec<DnsHistoryTopDomain>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let service = app.state::<DesktopService>();
+        service.dns_history_top_domains(limit.unwrap_or(20))
+    })
+    .await
+    .map_err(|err| err.to_string())?
+    .map_err(to_command_error)
+}
+
+#[tauri::command]
+pub async fn clear_dns_history(app: AppHandle) -> Result<usize, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let service = app.state::<DesktopService>();
+        service.clear_dns_history()
+    })
+    .await
+    .map_err(|err| err.to_string())?
+    .map_err(to_command_error)
 }
 
 #[tauri::command]

@@ -137,6 +137,39 @@ pub struct DnsLookupRecord {
     pub value: String,
 }
 
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DnsHistoryList {
+    pub items: Vec<DnsHistoryEntry>,
+    pub total: usize,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DnsHistoryEntry {
+    pub id: i64,
+    pub started_at: String,
+    pub domain: String,
+    pub record_type: String,
+    pub source: String,
+    pub route_id: i32,
+    pub upstream_name: String,
+    pub upstream_protocol: String,
+    pub duration_ms: u128,
+    pub attempt_count: usize,
+    pub response_code: String,
+    pub error: String,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DnsHistoryTopDomain {
+    pub domain: String,
+    pub count: usize,
+    pub last_seen_at: String,
+    pub average_duration_ms: f64,
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum ApplyConfigAction {

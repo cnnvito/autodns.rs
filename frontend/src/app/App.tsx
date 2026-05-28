@@ -25,6 +25,7 @@ import {
 import { errorMessage, formatDate } from "../shared/format";
 import { NotificationCenter, type AppNotification, type NotificationKind } from "../shared/notifications";
 import type { ConfigDocument, DesktopPreferences, DesktopStatus, SystemDnsSettings, SystemDnsStatus } from "../shared/types";
+import { HistoryPage } from "../pages/HistoryPage";
 import { LookupPage } from "../pages/LookupPage";
 import { OverviewPage } from "../pages/OverviewPage";
 import { RulesPage } from "../pages/RulesPage";
@@ -435,6 +436,7 @@ export function App() {
             <Tabs.Trigger className="mainTabsTrigger" value="rules">规则</Tabs.Trigger>
             <Tabs.Trigger className="mainTabsTrigger" value="upstreams">上游</Tabs.Trigger>
             <Tabs.Trigger className="mainTabsTrigger" value="lookup">查询</Tabs.Trigger>
+            <Tabs.Trigger className="mainTabsTrigger" value="history">历史</Tabs.Trigger>
             <Tabs.Trigger className="mainTabsTrigger" value="system-dns">系统 DNS</Tabs.Trigger>
             <Tabs.Trigger className="mainTabsTrigger" value="settings">设置</Tabs.Trigger>
           </Tabs.List>
@@ -484,6 +486,10 @@ export function App() {
 
           <Tabs.Content className="mainTabsContent" value="lookup">
             <LookupPage running={running} />
+          </Tabs.Content>
+
+          <Tabs.Content className="mainTabsContent" value="history">
+            <HistoryPage />
           </Tabs.Content>
 
           <Tabs.Content className="mainTabsContent" value="system-dns">

@@ -6,6 +6,8 @@ import type {
   DesktopConfig,
   DesktopPreferences,
   DesktopStatus,
+  DnsHistoryList,
+  DnsHistoryTopDomain,
   DnsLookupResult,
   ProxyConfig,
   SystemDnsSettings,
@@ -85,6 +87,30 @@ export async function lookupDomain(domain: string, recordType: string): Promise<
   };
 }
 
+export async function listDnsHistory(domain: string, limit = 100, offset = 0): Promise<DnsHistoryList> {
+  const result = await invoke<DnsHistoryList>("list_dns_history", { domain, limit, offset });
+  return {
+    items: Array.isArray(result.items) ? result.items.map(normalizeDnsHistoryEntry) : [],
+    total: Number.isFinite(result.total) ? result.total : 0
+  };
+}
+
+export async function dnsHistoryTopDomains(limit = 20): Promise<DnsHistoryTopDomain[]> {
+  const result = await invoke<DnsHistoryTopDomain[]>("dns_history_top_domains", { limit });
+  return Array.isArray(result)
+    ? result.map((item) => ({
+        domain: item.domain ?? "",
+        count: Number.isFinite(item.count) ? item.count : 0,
+        lastSeenAt: item.lastSeenAt ?? "",
+        averageDurationMs: Number.isFinite(item.averageDurationMs) ? item.averageDurationMs : 0
+      }))
+    : [];
+}
+
+export async function clearDnsHistory(): Promise<number> {
+  return invoke<number>("clear_dns_history");
+}
+
 export async function loadManagedConfig(): Promise<ConfigDocument> {
   return normalizeConfigDocument(await invoke<ConfigDocument>("managed_config"));
 }
@@ -156,6 +182,23 @@ function normalizeConfigDocument(doc: ConfigDocument): ConfigDocument {
         ipv6Enabled: typeof config.resolver.ipv6Enabled === "boolean" ? config.resolver.ipv6Enabled : true
       }
     }
+  };
+}
+
+function normalizeDnsHistoryEntry(item: Partial<DnsHistoryList["items"][number]>): DnsHistoryList["items"][number] {
+  return {
+    id: Number.isFinite(item.id) ? item.id! : 0,
+    startedAt: item.startedAt ?? "",
+    domain: item.domain ?? "",
+    recordType: item.recordType ?? "",
+    source: item.source ?? "",
+    routeId: Number.isFinite(item.routeId) ? item.routeId! : -1,
+    upstreamName: item.upstreamName ?? "",
+    upstreamProtocol: item.upstreamProtocol ?? "",
+    durationMs: Number.isFinite(item.durationMs) ? item.durationMs! : 0,
+    attemptCount: Number.isFinite(item.attemptCount) ? item.attemptCount! : 0,
+    responseCode: item.responseCode ?? "",
+    error: item.error ?? ""
   };
 }
 

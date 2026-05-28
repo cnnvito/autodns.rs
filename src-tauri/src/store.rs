@@ -3,9 +3,12 @@ use crate::config::{
     validate_desktop_config, CoreConfig,
 };
 use crate::desktop::{
-    ConfigDocument, DesktopConfig, DesktopHostStatus, DesktopRouteStatus, SystemDnsSettings,
+    ConfigDocument, DesktopConfig, DesktopHostStatus, DesktopRouteStatus, DnsHistoryEntry,
+    DnsHistoryList, DnsHistoryTopDomain, SystemDnsSettings,
 };
+use crate::history::DnsHistoryEvent;
 use anyhow::{anyhow, Context, Result};
+use chrono::{Duration as ChronoDuration, Utc};
 use parking_lot::Mutex;
 use rusqlite::{params, Connection, OptionalExtension};
 use std::path::{Path, PathBuf};
@@ -108,6 +111,35 @@ impl ConfigStore {
         cfg.apply_defaults();
         cfg.validate()?;
         Ok(cfg)
+    }
+
+    pub(crate) fn insert_dns_history(&self, events: &[DnsHistoryEvent]) -> Result<()> {
+        self.with_conn(|conn| insert_dns_history(conn, events))
+    }
+
+    pub fn list_dns_history(
+        &self,
+        domain: &str,
+        limit: usize,
+        offset: usize,
+    ) -> Result<DnsHistoryList> {
+        self.with_conn(|conn| list_dns_history(conn, domain, limit, offset))
+    }
+
+    pub fn dns_history_top_domains(&self, limit: usize) -> Result<Vec<DnsHistoryTopDomain>> {
+        self.with_conn(|conn| dns_history_top_domains(conn, limit))
+    }
+
+    pub fn clear_dns_history(&self) -> Result<usize> {
+        self.with_conn(clear_dns_history)
+    }
+
+    pub(crate) fn cleanup_dns_history(
+        &self,
+        retention_days: i64,
+        max_entries: usize,
+    ) -> Result<usize> {
+        self.with_conn(|conn| cleanup_dns_history(conn, retention_days, max_entries))
     }
 
     fn with_conn<T>(&self, f: impl FnOnce(&mut Connection) -> Result<T>) -> Result<T> {
@@ -230,6 +262,30 @@ fn migrate(conn: &Connection) -> Result<()> {
             last_error TEXT,
             updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
+
+        CREATE TABLE IF NOT EXISTS dns_query_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            started_at TEXT NOT NULL,
+            domain TEXT NOT NULL,
+            record_type TEXT NOT NULL,
+            qclass INTEGER NOT NULL DEFAULT 1,
+            source TEXT NOT NULL,
+            route_id INTEGER NOT NULL,
+            upstream_name TEXT NOT NULL DEFAULT '',
+            upstream_protocol TEXT NOT NULL DEFAULT '',
+            duration_ms INTEGER NOT NULL,
+            attempt_count INTEGER NOT NULL,
+            response_code TEXT NOT NULL,
+            error TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_dns_query_history_started_at
+            ON dns_query_history(started_at DESC, id DESC);
+        CREATE INDEX IF NOT EXISTS idx_dns_query_history_domain_started_at
+            ON dns_query_history(domain, started_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_dns_query_history_upstream
+            ON dns_query_history(upstream_name);
         "#,
     )
     .context("migrate database")?;
@@ -246,6 +302,8 @@ fn migrate(conn: &Connection) -> Result<()> {
     add_column_if_missing(conn, "upstreams", "host", "TEXT NOT NULL DEFAULT ''")?;
     add_column_if_missing(conn, "upstreams", "port", "INTEGER")?;
     add_column_if_missing(conn, "upstreams", "path", "TEXT NOT NULL DEFAULT ''")?;
+    drop_column_if_exists(conn, "dns_query_history", "results_json")?;
+    drop_column_if_exists(conn, "dns_query_history", "answer_count")?;
     drop_column_if_exists(conn, "app_settings", "fallback_system_dns")?;
     drop_column_if_exists(conn, "proxies", "endpoint")?;
     drop_column_if_exists(conn, "upstreams", "endpoint")?;
@@ -968,6 +1026,163 @@ fn mark_system_dns_error(conn: &mut Connection, adapter_id: &str, err: &str) -> 
     Ok(())
 }
 
+fn insert_dns_history(conn: &mut Connection, events: &[DnsHistoryEvent]) -> Result<()> {
+    if events.is_empty() {
+        return Ok(());
+    }
+    let tx = conn
+        .transaction()
+        .context("begin dns history transaction")?;
+    {
+        let mut stmt = tx.prepare(
+            r#"
+            INSERT INTO dns_query_history (
+                started_at, domain, record_type, qclass, source, route_id,
+                upstream_name, upstream_protocol, duration_ms, attempt_count,
+                response_code, error
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            "#,
+        )?;
+        for event in events {
+            stmt.execute(params![
+                &event.started_at,
+                &event.domain,
+                &event.record_type,
+                i64::from(event.qclass),
+                &event.source,
+                i64::from(event.route_id),
+                &event.upstream_name,
+                &event.upstream_protocol,
+                u128_to_i64(event.duration_ms)?,
+                usize_to_i64(event.attempt_count)?,
+                &event.response_code,
+                &event.error,
+            ])
+            .context("insert dns history")?;
+        }
+    }
+    tx.commit().context("commit dns history transaction")?;
+    Ok(())
+}
+
+fn list_dns_history(
+    conn: &mut Connection,
+    domain: &str,
+    limit: usize,
+    offset: usize,
+) -> Result<DnsHistoryList> {
+    let limit = limit.clamp(1, 500);
+    let domain = domain.trim();
+    let total = conn.query_row(
+        r#"
+        SELECT COUNT(*)
+        FROM dns_query_history
+        WHERE (?1 = '' OR lower(domain) LIKE '%' || lower(?1) || '%')
+        "#,
+        params![domain],
+        |row| row.get::<_, i64>(0),
+    )?;
+
+    let mut stmt = conn.prepare(
+        r#"
+        SELECT
+            id, started_at, domain, record_type, source, route_id,
+            upstream_name, upstream_protocol, duration_ms, attempt_count,
+            response_code, error
+        FROM dns_query_history
+        WHERE (?1 = '' OR lower(domain) LIKE '%' || lower(?1) || '%')
+        ORDER BY started_at DESC, id DESC
+        LIMIT ?2 OFFSET ?3
+        "#,
+    )?;
+    let rows = stmt.query_map(
+        params![domain, usize_to_i64(limit)?, usize_to_i64(offset)?],
+        |row| {
+            Ok(DnsHistoryEntry {
+                id: row.get(0)?,
+                started_at: row.get(1)?,
+                domain: row.get(2)?,
+                record_type: row.get(3)?,
+                source: row.get(4)?,
+                route_id: i64_to_i32(row.get(5)?)?,
+                upstream_name: row.get(6)?,
+                upstream_protocol: row.get(7)?,
+                duration_ms: i64_to_u128(row.get(8)?)?,
+                attempt_count: i64_to_usize(row.get(9)?)?,
+                response_code: row.get(10)?,
+                error: row.get(11)?,
+            })
+        },
+    )?;
+    Ok(DnsHistoryList {
+        items: collect_rows(rows)?,
+        total: i64_to_usize(total)?,
+    })
+}
+
+fn dns_history_top_domains(
+    conn: &mut Connection,
+    limit: usize,
+) -> Result<Vec<DnsHistoryTopDomain>> {
+    let mut stmt = conn.prepare(
+        r#"
+        SELECT
+            domain,
+            COUNT(*),
+            MAX(started_at),
+            COALESCE(AVG(duration_ms), 0)
+        FROM dns_query_history
+        GROUP BY domain
+        ORDER BY COUNT(*) DESC, MAX(started_at) DESC
+        LIMIT ?
+        "#,
+    )?;
+    let rows = stmt.query_map(params![usize_to_i64(limit.clamp(1, 100))?], |row| {
+        Ok(DnsHistoryTopDomain {
+            domain: row.get(0)?,
+            count: i64_to_usize(row.get(1)?)?,
+            last_seen_at: row.get(2)?,
+            average_duration_ms: row.get(3)?,
+        })
+    })?;
+    collect_rows(rows)
+}
+
+fn clear_dns_history(conn: &mut Connection) -> Result<usize> {
+    conn.execute("DELETE FROM dns_query_history", [])
+        .context("clear dns history")
+}
+
+fn cleanup_dns_history(
+    conn: &mut Connection,
+    retention_days: i64,
+    max_entries: usize,
+) -> Result<usize> {
+    let cutoff = (Utc::now() - ChronoDuration::days(retention_days.max(1))).to_rfc3339();
+    let mut deleted = conn
+        .execute(
+            "DELETE FROM dns_query_history WHERE started_at < ?",
+            params![cutoff],
+        )
+        .context("cleanup old dns history")?;
+    deleted += conn
+        .execute(
+            r#"
+            DELETE FROM dns_query_history
+            WHERE id IN (
+                SELECT id
+                FROM dns_query_history
+                ORDER BY started_at DESC, id DESC
+                LIMIT -1 OFFSET ?
+            )
+            "#,
+            params![usize_to_i64(max_entries.max(1))?],
+        )
+        .context("trim dns history")?;
+    Ok(deleted)
+}
+
 fn json_vec_from_sql(raw: &str) -> rusqlite::Result<Vec<String>> {
     serde_json::from_str(raw).map_err(|err| {
         rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(err))
@@ -1015,4 +1230,20 @@ fn i64_to_u32(value: i64) -> rusqlite::Result<u32> {
     u32::try_from(value).map_err(|err| {
         rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Integer, Box::new(err))
     })
+}
+
+fn i64_to_i32(value: i64) -> rusqlite::Result<i32> {
+    i32::try_from(value).map_err(|err| {
+        rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Integer, Box::new(err))
+    })
+}
+
+fn i64_to_u128(value: i64) -> rusqlite::Result<u128> {
+    u128::try_from(value).map_err(|err| {
+        rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Integer, Box::new(err))
+    })
+}
+
+fn u128_to_i64(value: u128) -> Result<i64> {
+    i64::try_from(value).context("integer is too large")
 }
