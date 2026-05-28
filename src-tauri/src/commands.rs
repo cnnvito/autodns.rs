@@ -1,6 +1,7 @@
 use crate::desktop::{
     ApplyConfigResult, ConfigDocument, DesktopConfig, DesktopPreferences, DesktopStatus,
-    DnsHistoryList, DnsHistoryTopDomain, DnsLookupResult, SystemDnsSettings, SystemDnsStatus,
+    DnsHistoryList, DnsHistoryOverview, DnsHistoryTopDomain, DnsLookupResult, SystemDnsSettings,
+    SystemDnsStatus,
 };
 use crate::preferences;
 use crate::service::DesktopService;
@@ -59,6 +60,8 @@ pub async fn lookup_domain(
 pub async fn list_dns_history(
     app: AppHandle,
     domain: Option<String>,
+    status_filter: Option<String>,
+    window: Option<String>,
     limit: Option<usize>,
     offset: Option<usize>,
 ) -> Result<DnsHistoryList, String> {
@@ -66,6 +69,8 @@ pub async fn list_dns_history(
         let service = app.state::<DesktopService>();
         service.list_dns_history(
             domain.unwrap_or_default(),
+            status_filter.unwrap_or_else(|| "all".to_string()),
+            window.unwrap_or_else(|| "all".to_string()),
             limit.unwrap_or(100),
             offset.unwrap_or(0),
         )
@@ -79,10 +84,29 @@ pub async fn list_dns_history(
 pub async fn dns_history_top_domains(
     app: AppHandle,
     limit: Option<usize>,
+    domain: Option<String>,
+    status_filter: Option<String>,
+    window: Option<String>,
 ) -> Result<Vec<DnsHistoryTopDomain>, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let service = app.state::<DesktopService>();
-        service.dns_history_top_domains(limit.unwrap_or(20))
+        service.dns_history_top_domains(
+            limit.unwrap_or(20),
+            domain.unwrap_or_default(),
+            status_filter.unwrap_or_else(|| "all".to_string()),
+            window.unwrap_or_else(|| "all".to_string()),
+        )
+    })
+    .await
+    .map_err(|err| err.to_string())?
+    .map_err(to_command_error)
+}
+
+#[tauri::command]
+pub async fn dns_history_overview(app: AppHandle) -> Result<DnsHistoryOverview, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let service = app.state::<DesktopService>();
+        service.dns_history_overview()
     })
     .await
     .map_err(|err| err.to_string())?

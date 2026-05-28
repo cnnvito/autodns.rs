@@ -4,13 +4,13 @@ use crate::config::{
 };
 use crate::desktop::{
     ConfigDocument, DesktopConfig, DesktopHostStatus, DesktopRouteStatus, DnsHistoryEntry,
-    DnsHistoryList, DnsHistoryTopDomain, SystemDnsSettings,
+    DnsHistoryList, DnsHistoryOverview, DnsHistoryTopDomain, SystemDnsSettings,
 };
 use crate::history::DnsHistoryEvent;
 use anyhow::{anyhow, Context, Result};
 use chrono::{Duration as ChronoDuration, Utc};
 use parking_lot::Mutex;
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -128,14 +128,29 @@ impl ConfigStore {
     pub fn list_dns_history(
         &self,
         domain: &str,
+        status_filter: &str,
+        window: &str,
         limit: usize,
         offset: usize,
     ) -> Result<DnsHistoryList> {
-        self.with_conn(|conn| list_dns_history(conn, domain, limit, offset))
+        let mut conn = self.open_read_connection()?;
+        list_dns_history(&mut conn, domain, status_filter, window, limit, offset)
     }
 
-    pub fn dns_history_top_domains(&self, limit: usize) -> Result<Vec<DnsHistoryTopDomain>> {
-        self.with_conn(|conn| dns_history_top_domains(conn, limit))
+    pub fn dns_history_top_domains(
+        &self,
+        limit: usize,
+        domain: &str,
+        status_filter: &str,
+        window: &str,
+    ) -> Result<Vec<DnsHistoryTopDomain>> {
+        let mut conn = self.open_read_connection()?;
+        dns_history_top_domains(&mut conn, limit, domain, status_filter, window)
+    }
+
+    pub fn dns_history_overview(&self) -> Result<DnsHistoryOverview> {
+        let mut conn = self.open_read_connection()?;
+        dns_history_overview(&mut conn)
     }
 
     pub fn clear_dns_history(&self) -> Result<usize> {
@@ -153,6 +168,21 @@ impl ConfigStore {
     fn with_conn<T>(&self, f: impl FnOnce(&mut Connection) -> Result<T>) -> Result<T> {
         let mut conn = self.conn.lock();
         f(&mut conn)
+    }
+
+    fn open_read_connection(&self) -> Result<Connection> {
+        let conn = Connection::open_with_flags(&self.path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .with_context(|| format!("open readonly database: {}", self.path.display()))?;
+        conn.busy_timeout(Duration::from_millis(150))
+            .context("set readonly sqlite busy timeout")?;
+        conn.execute_batch(
+            r#"
+            PRAGMA foreign_keys = ON;
+            PRAGMA query_only = ON;
+            "#,
+        )
+        .context("configure readonly sqlite connection")?;
+        Ok(conn)
     }
 }
 
@@ -1126,18 +1156,24 @@ fn insert_dns_history(conn: &mut Connection, events: &[DnsHistoryEvent]) -> Resu
 fn list_dns_history(
     conn: &mut Connection,
     domain: &str,
+    status_filter: &str,
+    window: &str,
     limit: usize,
     offset: usize,
 ) -> Result<DnsHistoryList> {
     let limit = limit.clamp(1, 500);
     let domain = domain.trim();
+    let cutoff = history_window_cutoff(window);
+    let error_only = history_error_only(status_filter);
     let total = conn.query_row(
         r#"
         SELECT COUNT(*)
         FROM dns_query_history
         WHERE (?1 = '' OR lower(domain) LIKE '%' || lower(?1) || '%')
+            AND (?2 = '' OR started_at >= ?2)
+            AND (?3 = 0 OR source = 'error' OR response_code <> 'NOERROR' OR error <> '')
         "#,
-        params![domain],
+        params![domain, &cutoff, error_only],
         |row| row.get::<_, i64>(0),
     )?;
 
@@ -1149,12 +1185,20 @@ fn list_dns_history(
             response_code, min_ttl, error
         FROM dns_query_history
         WHERE (?1 = '' OR lower(domain) LIKE '%' || lower(?1) || '%')
+            AND (?2 = '' OR started_at >= ?2)
+            AND (?3 = 0 OR source = 'error' OR response_code <> 'NOERROR' OR error <> '')
         ORDER BY started_at DESC, id DESC
-        LIMIT ?2 OFFSET ?3
+        LIMIT ?4 OFFSET ?5
         "#,
     )?;
     let rows = stmt.query_map(
-        params![domain, usize_to_i64(limit)?, usize_to_i64(offset)?],
+        params![
+            domain,
+            &cutoff,
+            error_only,
+            usize_to_i64(limit)?,
+            usize_to_i64(offset)?
+        ],
         |row| {
             Ok(DnsHistoryEntry {
                 id: row.get(0)?,
@@ -1182,7 +1226,13 @@ fn list_dns_history(
 fn dns_history_top_domains(
     conn: &mut Connection,
     limit: usize,
+    domain: &str,
+    status_filter: &str,
+    window: &str,
 ) -> Result<Vec<DnsHistoryTopDomain>> {
+    let domain = domain.trim();
+    let cutoff = history_window_cutoff(window);
+    let error_only = history_error_only(status_filter);
     let mut stmt = conn.prepare(
         r#"
         SELECT
@@ -1191,12 +1241,89 @@ fn dns_history_top_domains(
             MAX(started_at),
             COALESCE(AVG(duration_ms), 0)
         FROM dns_query_history
+        WHERE (?1 = '' OR lower(domain) LIKE '%' || lower(?1) || '%')
+            AND (?2 = '' OR started_at >= ?2)
+            AND (?3 = 0 OR source = 'error' OR response_code <> 'NOERROR' OR error <> '')
         GROUP BY domain
         ORDER BY COUNT(*) DESC, MAX(started_at) DESC
-        LIMIT ?
+        LIMIT ?4
         "#,
     )?;
-    let rows = stmt.query_map(params![usize_to_i64(limit.clamp(1, 100))?], |row| {
+    let rows = stmt.query_map(
+        params![
+            domain,
+            &cutoff,
+            error_only,
+            usize_to_i64(limit.clamp(1, 100))?
+        ],
+        |row| {
+            Ok(DnsHistoryTopDomain {
+                domain: row.get(0)?,
+                count: i64_to_usize(row.get(1)?)?,
+                last_seen_at: row.get(2)?,
+                average_duration_ms: row.get(3)?,
+            })
+        },
+    )?;
+    collect_rows(rows)
+}
+
+fn history_error_only(status_filter: &str) -> i64 {
+    if status_filter == "errors" {
+        1
+    } else {
+        0
+    }
+}
+
+fn history_window_cutoff(window: &str) -> String {
+    let now = Utc::now();
+    match window {
+        "1h" => (now - ChronoDuration::hours(1)).to_rfc3339(),
+        "24h" => (now - ChronoDuration::hours(24)).to_rfc3339(),
+        _ => String::new(),
+    }
+}
+
+fn dns_history_overview(conn: &mut Connection) -> Result<DnsHistoryOverview> {
+    let generated_at = Utc::now();
+    let window_started_at = generated_at - ChronoDuration::hours(24);
+    let window_started_at = window_started_at.to_rfc3339();
+
+    let (total, cache_hits, failures, average_duration_ms): (i64, i64, i64, f64) = conn
+        .query_row(
+            r#"
+            SELECT
+                COUNT(*),
+                COALESCE(SUM(CASE WHEN source = 'cache' THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(CASE
+                    WHEN source = 'error' OR response_code <> 'NOERROR' OR error <> '' THEN 1
+                    ELSE 0
+                END), 0),
+                COALESCE(AVG(duration_ms), 0)
+            FROM dns_query_history
+            WHERE started_at >= ?
+            "#,
+            params![&window_started_at],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .context("load dns history overview summary")?;
+
+    let mut top_stmt = conn.prepare(
+        r#"
+        SELECT
+            domain,
+            COUNT(*),
+            MAX(started_at),
+            COALESCE(AVG(duration_ms), 0)
+        FROM dns_query_history
+        WHERE started_at >= ?
+        GROUP BY domain
+        ORDER BY COUNT(*) DESC, MAX(started_at) DESC
+        LIMIT 5
+        "#,
+    )?;
+    let top_rows = top_stmt.query_map(params![&window_started_at], |row| {
         Ok(DnsHistoryTopDomain {
             domain: row.get(0)?,
             count: i64_to_usize(row.get(1)?)?,
@@ -1204,7 +1331,49 @@ fn dns_history_top_domains(
             average_duration_ms: row.get(3)?,
         })
     })?;
-    collect_rows(rows)
+    let top_domains = collect_rows(top_rows)?;
+
+    let mut error_stmt = conn.prepare(
+        r#"
+        SELECT
+            id, started_at, domain, record_type, source, route_id,
+            upstream_name, upstream_protocol, duration_ms, attempt_count,
+            response_code, min_ttl, error
+        FROM dns_query_history
+        WHERE started_at >= ?
+            AND (source = 'error' OR response_code <> 'NOERROR' OR error <> '')
+        ORDER BY started_at DESC, id DESC
+        LIMIT 5
+        "#,
+    )?;
+    let error_rows = error_stmt.query_map(params![&window_started_at], |row| {
+        Ok(DnsHistoryEntry {
+            id: row.get(0)?,
+            started_at: row.get(1)?,
+            domain: row.get(2)?,
+            record_type: row.get(3)?,
+            source: row.get(4)?,
+            route_id: i64_to_i32(row.get(5)?)?,
+            upstream_name: row.get(6)?,
+            upstream_protocol: row.get(7)?,
+            duration_ms: i64_to_u128(row.get(8)?)?,
+            attempt_count: i64_to_usize(row.get(9)?)?,
+            response_code: row.get(10)?,
+            min_ttl: row.get::<_, Option<i64>>(11)?.map(i64_to_u32).transpose()?,
+            error: row.get(12)?,
+        })
+    })?;
+
+    Ok(DnsHistoryOverview {
+        window_started_at,
+        generated_at: generated_at.to_rfc3339(),
+        total: i64_to_usize(total)?,
+        cache_hits: i64_to_usize(cache_hits)?,
+        failures: i64_to_usize(failures)?,
+        average_duration_ms,
+        top_domains,
+        recent_errors: collect_rows(error_rows)?,
+    })
 }
 
 fn clear_dns_history(conn: &mut Connection) -> Result<usize> {
@@ -1352,11 +1521,153 @@ mod tests {
             .expect("insert history");
 
         let history = store
-            .list_dns_history("ttl.example", 10, 0)
+            .list_dns_history("ttl.example", "all", "all", 10, 0)
             .expect("load history");
 
         assert_eq!(history.items.len(), 1);
         assert_eq!(history.items[0].min_ttl, Some(42));
+
+        drop(store);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn dns_history_filters_errors_and_window() {
+        let path = temp_store_path("history-filter");
+        let store = ConfigStore::open(path.clone()).expect("open config store");
+        let now = Utc::now();
+
+        store
+            .insert_dns_history(&[
+                DnsHistoryEvent {
+                    started_at: now.to_rfc3339(),
+                    domain: "ok.example".into(),
+                    record_type: "A".into(),
+                    qclass: 1,
+                    source: "upstream".into(),
+                    route_id: 0,
+                    upstream_name: "test".into(),
+                    upstream_protocol: "udp".into(),
+                    duration_ms: 12,
+                    attempt_count: 1,
+                    response_code: "NOERROR".into(),
+                    min_ttl: Some(42),
+                    error: String::new(),
+                },
+                DnsHistoryEvent {
+                    started_at: now.to_rfc3339(),
+                    domain: "bad.example".into(),
+                    record_type: "A".into(),
+                    qclass: 1,
+                    source: "error".into(),
+                    route_id: 0,
+                    upstream_name: String::new(),
+                    upstream_protocol: String::new(),
+                    duration_ms: 30,
+                    attempt_count: 2,
+                    response_code: "SERVFAIL".into(),
+                    min_ttl: None,
+                    error: "all upstreams failed".into(),
+                },
+                DnsHistoryEvent {
+                    started_at: (now - ChronoDuration::hours(2)).to_rfc3339(),
+                    domain: "old-bad.example".into(),
+                    record_type: "A".into(),
+                    qclass: 1,
+                    source: "error".into(),
+                    route_id: 0,
+                    upstream_name: String::new(),
+                    upstream_protocol: String::new(),
+                    duration_ms: 40,
+                    attempt_count: 2,
+                    response_code: "SERVFAIL".into(),
+                    min_ttl: None,
+                    error: "old failure".into(),
+                },
+            ])
+            .expect("insert history");
+
+        let history = store
+            .list_dns_history("", "errors", "1h", 10, 0)
+            .expect("load filtered history");
+        let top_domains = store
+            .dns_history_top_domains(10, "", "errors", "1h")
+            .expect("load filtered top domains");
+
+        assert_eq!(history.total, 1);
+        assert_eq!(history.items[0].domain, "bad.example");
+        assert_eq!(top_domains.len(), 1);
+        assert_eq!(top_domains[0].domain, "bad.example");
+
+        drop(store);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn dns_history_overview_summarizes_recent_window() {
+        let path = temp_store_path("history-overview");
+        let store = ConfigStore::open(path.clone()).expect("open config store");
+        let now = Utc::now();
+
+        store
+            .insert_dns_history(&[
+                DnsHistoryEvent {
+                    started_at: now.to_rfc3339(),
+                    domain: "cache.example".into(),
+                    record_type: "A".into(),
+                    qclass: 1,
+                    source: "cache".into(),
+                    route_id: 0,
+                    upstream_name: "test".into(),
+                    upstream_protocol: "udp".into(),
+                    duration_ms: 20,
+                    attempt_count: 0,
+                    response_code: "NOERROR".into(),
+                    min_ttl: Some(60),
+                    error: String::new(),
+                },
+                DnsHistoryEvent {
+                    started_at: now.to_rfc3339(),
+                    domain: "fail.example".into(),
+                    record_type: "A".into(),
+                    qclass: 1,
+                    source: "error".into(),
+                    route_id: 0,
+                    upstream_name: String::new(),
+                    upstream_protocol: String::new(),
+                    duration_ms: 40,
+                    attempt_count: 2,
+                    response_code: "SERVFAIL".into(),
+                    min_ttl: None,
+                    error: "all upstreams failed".into(),
+                },
+                DnsHistoryEvent {
+                    started_at: (now - ChronoDuration::hours(25)).to_rfc3339(),
+                    domain: "old.example".into(),
+                    record_type: "A".into(),
+                    qclass: 1,
+                    source: "upstream".into(),
+                    route_id: 0,
+                    upstream_name: "test".into(),
+                    upstream_protocol: "udp".into(),
+                    duration_ms: 100,
+                    attempt_count: 1,
+                    response_code: "NOERROR".into(),
+                    min_ttl: Some(60),
+                    error: String::new(),
+                },
+            ])
+            .expect("insert history");
+
+        let overview = store.dns_history_overview().expect("load overview");
+
+        assert_eq!(overview.total, 2);
+        assert_eq!(overview.cache_hits, 1);
+        assert_eq!(overview.failures, 1);
+        assert_eq!(overview.average_duration_ms, 30.0);
+        assert_eq!(overview.top_domains.len(), 2);
+        assert_eq!(overview.recent_errors.len(), 1);
+        assert_eq!(overview.recent_errors[0].domain, "fail.example");
 
         drop(store);
         let _ = std::fs::remove_file(path);

@@ -1,7 +1,7 @@
 use crate::desktop::{
     ApplyConfigAction, ApplyConfigResult, ConfigDocument, DesktopConfig, DesktopStatus,
-    DnsHistoryList, DnsHistoryTopDomain, DnsLookupResult, SystemDnsAdapter, SystemDnsSettings,
-    SystemDnsStatus,
+    DnsHistoryList, DnsHistoryOverview, DnsHistoryTopDomain, DnsLookupResult, SystemDnsAdapter,
+    SystemDnsSettings, SystemDnsStatus,
 };
 use crate::dns::{
     build_proxy_health, build_upstream_health, mark_proxies_unknown, mark_upstreams_unknown,
@@ -190,14 +190,28 @@ impl DesktopService {
     pub fn list_dns_history(
         &self,
         domain: String,
+        status_filter: String,
+        window: String,
         limit: usize,
         offset: usize,
     ) -> Result<DnsHistoryList> {
-        self.store()?.list_dns_history(&domain, limit, offset)
+        self.store()?
+            .list_dns_history(&domain, &status_filter, &window, limit, offset)
     }
 
-    pub fn dns_history_top_domains(&self, limit: usize) -> Result<Vec<DnsHistoryTopDomain>> {
-        self.store()?.dns_history_top_domains(limit)
+    pub fn dns_history_top_domains(
+        &self,
+        limit: usize,
+        domain: String,
+        status_filter: String,
+        window: String,
+    ) -> Result<Vec<DnsHistoryTopDomain>> {
+        self.store()?
+            .dns_history_top_domains(limit, &domain, &status_filter, &window)
+    }
+
+    pub fn dns_history_overview(&self) -> Result<DnsHistoryOverview> {
+        self.store()?.dns_history_overview()
     }
 
     pub fn clear_dns_history(&self) -> Result<usize> {

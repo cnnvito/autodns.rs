@@ -173,6 +173,19 @@ pub struct DnsHistoryTopDomain {
     pub average_duration_ms: f64,
 }
 
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DnsHistoryOverview {
+    pub window_started_at: String,
+    pub generated_at: String,
+    pub total: usize,
+    pub cache_hits: usize,
+    pub failures: usize,
+    pub average_duration_ms: f64,
+    pub top_domains: Vec<DnsHistoryTopDomain>,
+    pub recent_errors: Vec<DnsHistoryEntry>,
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum ApplyConfigAction {

@@ -105,6 +105,7 @@ pub fn run() {
             lookup_domain,
             list_dns_history,
             dns_history_top_domains,
+            dns_history_overview,
             clear_dns_history,
             managed_config,
             validate_config,
