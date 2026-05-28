@@ -3344,15 +3344,11 @@ fn section_ttl_offsets(resp: &[u8], answers_only: bool) -> Result<Vec<usize>> {
         return Err(anyhow!("dns response is too short"));
     }
     let qdcount = u16::from_be_bytes([resp[4], resp[5]]) as usize;
-    let mut counts = [
+    let counts = [
         u16::from_be_bytes([resp[6], resp[7]]) as usize,
         u16::from_be_bytes([resp[8], resp[9]]) as usize,
         u16::from_be_bytes([resp[10], resp[11]]) as usize,
     ];
-    if answers_only {
-        counts[1] = 0;
-        counts[2] = 0;
-    }
     let mut offset = 12;
     for _ in 0..qdcount {
         offset = skip_dns_name(resp, offset)?;
@@ -3363,7 +3359,7 @@ fn section_ttl_offsets(resp: &[u8], answers_only: bool) -> Result<Vec<usize>> {
     }
 
     let mut ttl_offsets = Vec::new();
-    for count in counts {
+    for (section_index, count) in counts.into_iter().enumerate() {
         for _ in 0..count {
             offset = skip_dns_name(resp, offset)?;
             if offset + 10 > resp.len() {
@@ -3376,7 +3372,9 @@ fn section_ttl_offsets(resp: &[u8], answers_only: bool) -> Result<Vec<usize>> {
                 return Err(anyhow!("dns rr data is truncated"));
             }
             offset += rdlen;
-            ttl_offsets.push(ttl_offset);
+            if !answers_only || section_index == 0 {
+                ttl_offsets.push(ttl_offset);
+            }
         }
     }
     if offset != resp.len() {
@@ -3655,6 +3653,19 @@ mod tests {
         assert_eq!(ttls.len(), 2);
         assert!(ttls[0] <= 30);
         assert!(ttls[1] <= 30);
+    }
+
+    #[test]
+    fn answer_min_ttl_ignores_additional_records() {
+        let mut resp = build_query("ttl.example", TYPE_A);
+        resp[2] = 0x81;
+        resp[3] = 0x80;
+        resp[6..8].copy_from_slice(&1u16.to_be_bytes());
+        resp[10..12].copy_from_slice(&1u16.to_be_bytes());
+        write_a_rr_with_ttl(&mut resp, 45);
+        write_a_rr_with_ttl(&mut resp, 5);
+
+        assert_eq!(answer_min_ttl(&resp).expect("parse answer ttl"), Some(45));
     }
 
     #[test]
