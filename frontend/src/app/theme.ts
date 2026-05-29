@@ -1,4 +1,4 @@
-export type ThemePreference = "light" | "dark";
+export type ThemePreference = "system" | "light" | "dark";
 
 type SelectOption = {
   value: string;
@@ -8,20 +8,24 @@ type SelectOption = {
 export const themeStorageKey = "autodns.theme";
 
 export const themeOptions: SelectOption[] = [
+  { value: "system", label: "跟随系统" },
   { value: "light", label: "亮色" },
   { value: "dark", label: "暗色" }
 ];
 
 export function loadThemePreference(): ThemePreference {
   try {
-    return normalizeTheme(window.localStorage.getItem(themeStorageKey) || "light");
+    return normalizeTheme(window.localStorage.getItem(themeStorageKey) || "system");
   } catch {
-    return "light";
+    return "system";
   }
 }
 
 export function normalizeTheme(value: string): ThemePreference {
-  return value === "dark" ? "dark" : "light";
+  if (value === "light" || value === "dark") {
+    return value;
+  }
+  return "system";
 }
 
 export function applyThemePreference(theme: ThemePreference) {

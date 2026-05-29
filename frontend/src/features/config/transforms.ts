@@ -42,7 +42,7 @@ export function formatRoute(row: RouteRow): string {
 }
 
 export function defaultRoute(upstream: string): string {
-  return formatRoute({ match: "suffix", domain: "example.com", upstreams: upstream ? [upstream] : [] });
+  return formatRoute({ match: "suffix", domain: "", upstreams: upstream ? [upstream] : [] });
 }
 
 export function defaultPortForProtocol(protocol: string): string {

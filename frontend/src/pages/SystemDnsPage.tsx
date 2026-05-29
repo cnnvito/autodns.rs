@@ -1,12 +1,14 @@
 import { Alert, Button, Checkbox, Descriptions, Empty, List, Modal, Space, Switch, Table, Tag, Typography } from "antd";
 import { useState } from "react";
 
+import { LoadingOverlay } from "../shared/LoadingOverlay";
 import type { SystemDnsAdapter, SystemDnsSettings, SystemDnsStatus } from "../shared/types";
 
 type SystemDnsPageProps = {
   systemDns: SystemDnsStatus | null;
   loading: boolean;
   running: boolean;
+  embedded?: boolean;
   onSystemDnsSettingsChange: (settings: SystemDnsSettings) => void;
   onApplySystemDns: () => void;
   onRestoreSystemDns: () => void;
@@ -16,6 +18,7 @@ export function SystemDnsPage({
   systemDns,
   loading,
   running,
+  embedded = false,
   onSystemDnsSettingsChange,
   onApplySystemDns,
   onRestoreSystemDns
@@ -59,7 +62,7 @@ export function SystemDnsPage({
 
   return (
     <>
-      <section className="pageWorkbench">
+      <section className={embedded ? "systemDnsEmbedded" : "pageWorkbench"}>
         <div className="workbenchToolbar">
           <div className="workbenchToolbarMain">
             <span className="workbenchTitle">系统 DNS</span>
@@ -82,7 +85,7 @@ export function SystemDnsPage({
           </div>
         </div>
 
-        <div className="workbenchBody">
+        <div className="workbenchBody loadingOverlayHost" aria-busy={loading}>
           <main className="workbenchMain">
             {systemDns?.warnings.length ? (
               <Space orientation="vertical" size={8} className="pageFill" style={{ marginBottom: 12 }}>
@@ -108,13 +111,11 @@ export function SystemDnsPage({
             <div className="workbenchPanel">
               <div className="workbenchPanelHeader">
                 <span className="workbenchPanelTitle">网络接口</span>
-                <Typography.Text type="secondary">{loading ? "正在读取网络接口" : "选择需要接管的接口"}</Typography.Text>
               </div>
               <div className="workbenchPanelBodyFlush">
                 <Table<SystemDnsAdapter>
                   rowKey="id"
                   size="small"
-                  loading={loading}
                   pagination={false}
                   dataSource={systemDns?.adapters ?? []}
                   locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={systemDns ? "未读取到网络接口" : "还没有系统 DNS 状态"} /> }}
@@ -176,13 +177,8 @@ export function SystemDnsPage({
                 <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="选择接口后查看详情" />
               )}
             </div>
-            <div className="workbenchInspectorSection">
-              <div className="workbenchInspectorTitle">操作说明</div>
-              <Typography.Text type="secondary">
-                {running ? "只修改选中的网络接口，恢复时优先使用保存的原始 DNS。" : "启动本地 DNS 服务后才能接管系统 DNS。"}
-              </Typography.Text>
-            </div>
           </aside>
+          {loading ? <LoadingOverlay text="正在读取系统 DNS 状态" /> : null}
         </div>
       </section>
 

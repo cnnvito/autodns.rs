@@ -11,7 +11,8 @@ import type {
   DnsHistoryWindow
 } from "../shared/types";
 
-const pageSize = 100;
+const defaultHistoryPageSize = 20;
+const historyPageSizeOptions = [20, 50, 100];
 
 const sourceLabels: Record<string, string> = {
   upstream: "上游",
@@ -38,7 +39,8 @@ export function HistoryPage() {
   const [filter, setFilter] = useState("");
   const [statusFilter, setStatusFilter] = useState<DnsHistoryStatusFilter>("all");
   const [historyWindow, setHistoryWindow] = useState<DnsHistoryWindow>("24h");
-  const [limit, setLimit] = useState(pageSize);
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(defaultHistoryPageSize);
   const [items, setItems] = useState<DnsHistoryEntry[]>([]);
   const [topDomains, setTopDomains] = useState<DnsHistoryTopDomain[]>([]);
   const [total, setTotal] = useState(0);
@@ -48,7 +50,7 @@ export function HistoryPage() {
   useEffect(() => {
     const timer = window.setTimeout(() => {
       setFilter(domain.trim());
-      setLimit(pageSize);
+      setPage(1);
     }, 300);
     return () => window.clearTimeout(timer);
   }, [domain]);
@@ -58,7 +60,7 @@ export function HistoryPage() {
     setError("");
     try {
       const [history, nextTopDomains] = await Promise.all([
-        listDnsHistory(filter, limit, 0, statusFilter, historyWindow),
+        listDnsHistory(filter, pageSize, (page - 1) * pageSize, statusFilter, historyWindow),
         dnsHistoryTopDomains(20, filter, statusFilter, historyWindow)
       ]);
       setItems(history.items);
@@ -69,7 +71,7 @@ export function HistoryPage() {
     } finally {
       setBusy(false);
     }
-  }, [filter, historyWindow, limit, statusFilter]);
+  }, [filter, historyWindow, page, statusFilter]);
 
   useEffect(() => {
     void refresh();
@@ -77,12 +79,17 @@ export function HistoryPage() {
 
   function updateStatusFilter(value: DnsHistoryStatusFilter) {
     setStatusFilter(value);
-    setLimit(pageSize);
+    setPage(1);
   }
 
   function updateWindow(value: DnsHistoryWindow) {
     setHistoryWindow(value);
-    setLimit(pageSize);
+    setPage(1);
+  }
+
+  function updatePage(nextPage: number, nextPageSize: number) {
+    setPageSize(nextPageSize);
+    setPage(nextPageSize === pageSize ? nextPage : 1);
   }
 
   async function clearHistory() {
@@ -100,6 +107,7 @@ export function HistoryPage() {
           setItems([]);
           setTopDomains([]);
           setTotal(0);
+          setPage(1);
         } catch (err) {
           setError(errorMessage(err));
         } finally {
@@ -124,7 +132,8 @@ export function HistoryPage() {
     { title: "耗时", dataIndex: "durationMs", width: 86, render: (value: number) => `${value} ms` },
     { title: "状态", width: 104, render: (_, item) => <HistoryStatus item={item} /> }
   ];
-  const focusedItem = items[0] ?? null;
+  const pageStart = total === 0 ? 0 : (page - 1) * pageSize + 1;
+  const pageEnd = Math.min(page * pageSize, total);
 
   return (
     <section className="pageWorkbench">
@@ -159,7 +168,7 @@ export function HistoryPage() {
           <div className="workbenchPanel">
             <div className="workbenchPanelHeader">
               <span className="workbenchPanelTitle">解析明细</span>
-              <Typography.Text type="secondary">显示 {items.length} / {total} 条</Typography.Text>
+              <Typography.Text type="secondary">{total ? `${pageStart}-${pageEnd} / ${total}` : "0 条"}</Typography.Text>
             </div>
             <div className="workbenchPanelBodyFlush">
           <Table
@@ -168,7 +177,16 @@ export function HistoryPage() {
             loading={busy}
             columns={columns}
             dataSource={items}
-            pagination={false}
+            pagination={{
+              current: page,
+              pageSize,
+              total,
+              pageSizeOptions: historyPageSizeOptions,
+              showSizeChanger: true,
+              showLessItems: true,
+              showTotal: (value) => `共 ${value} 条`,
+              onChange: updatePage
+            }}
             expandable={{
               expandedRowRender: (item) => (
                 <Descriptions
@@ -187,35 +205,9 @@ export function HistoryPage() {
           />
             </div>
           </div>
-
-          {items.length < total ? (
-            <Button style={{ marginTop: 16 }} onClick={() => setLimit((value) => value + pageSize)} disabled={busy}>
-              加载更多
-            </Button>
-          ) : null}
         </main>
 
         <aside className="workbenchInspector">
-          <div className="workbenchInspectorSection">
-            <div className="workbenchInspectorTitle">最新记录</div>
-            {focusedItem ? (
-              <Descriptions
-                size="small"
-                column={1}
-                items={[
-                  { key: "domain", label: "域名", children: focusedItem.domain },
-                  { key: "recordType", label: "类型", children: focusedItem.recordType },
-                  { key: "source", label: "来源", children: sourceLabels[focusedItem.source] ?? focusedItem.source },
-                  { key: "upstream", label: "上游", children: focusedItem.upstreamName ? `${focusedItem.upstreamName}${focusedItem.upstreamProtocol ? `/${focusedItem.upstreamProtocol}` : ""}` : "-" },
-                  { key: "duration", label: "耗时", children: `${focusedItem.durationMs} ms` },
-                  { key: "error", label: "错误", children: focusedItem.error || "-" }
-                ]}
-              />
-            ) : (
-              <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无记录" />
-            )}
-          </div>
-
           <div className="workbenchInspectorSection">
             <div className="workbenchInspectorTitle">Top 域名</div>
           <List

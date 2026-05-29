@@ -1,18 +1,14 @@
-@layer theme, utilities;
-
-@import "tailwindcss/theme.css" layer(theme);
-@import "tailwindcss/utilities.css" layer(utilities);
-
 * {
   box-sizing: border-box;
 }
 
 body {
   margin: 0;
-  min-width: 880px;
-  min-height: 680px;
+  min-width: 0;
+  min-height: 100dvh;
   font-synthesis: none;
   text-rendering: geometricPrecision;
+  overflow: hidden;
 }
 
 .shellFallback {
@@ -49,23 +45,26 @@ textarea {
 }
 
 .shell {
-  min-width: 1120px;
-  min-height: 100vh;
+  min-width: 0;
+  min-height: 0;
 }
 
 .desktopShell {
-  height: 100vh;
+  height: 100dvh;
   overflow: hidden;
 }
 
 .desktopToolbar {
   z-index: 30;
   display: grid;
-  grid-template-columns: minmax(200px, auto) minmax(220px, 1fr) auto;
+  flex: 0 0 52px;
+  grid-template-columns: minmax(190px, auto) minmax(0, 1fr);
   align-items: center;
-  gap: 16px;
-  height: 64px;
-  padding: 0 20px;
+  gap: 14px;
+  height: 52px;
+  min-height: 52px;
+  max-height: 52px;
+  padding: 0 18px;
   background: var(--ant-color-bg-container);
   color: var(--ant-color-text);
   line-height: normal;
@@ -84,15 +83,25 @@ textarea {
 }
 
 .desktopBrand img {
-  width: 32px;
-  height: 32px;
+  width: 28px;
+  height: 28px;
   flex: 0 0 auto;
+  transition: filter 160ms ease, opacity 160ms ease;
+}
+
+.themeDark .desktopBrand img {
+  filter: invert(1) brightness(1.28);
+  opacity: 0.92;
 }
 
 .desktopBrand h1.ant-typography {
   margin: 0;
-  font-size: 18px;
+  font-size: 15px;
   line-height: 1.15;
+}
+
+.desktopBrand .ant-typography-secondary {
+  font-size: 12px;
 }
 
 .desktopRuntime {
@@ -103,14 +112,107 @@ textarea {
   display: inline-flex;
   align-items: center;
   justify-content: flex-end;
+  justify-self: end;
   gap: 8px;
   flex: 0 0 auto;
 }
 
 .appContent {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 0;
   min-width: 0;
   min-height: 0;
-  overflow: auto;
+  overflow: hidden;
+  background: var(--ant-color-bg-container);
+}
+
+.desktopBody {
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.desktopSidebar {
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--ant-color-fill-quaternary) !important;
+  border-inline-end: 1px solid var(--ant-color-border-secondary);
+}
+
+.desktopSidebar .ant-layout-sider-children {
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  padding: 14px 10px;
+}
+
+.desktopSidebarLabel {
+  margin: 4px 10px 8px;
+  color: var(--ant-color-text-tertiary);
+  font-size: 11px;
+  font-weight: 750;
+  letter-spacing: 0.04em;
+}
+
+.desktopNavMenu {
+  flex: 0 0 auto;
+  border-inline-end: 0 !important;
+  background: transparent;
+}
+
+.desktopSidebarStatus {
+  margin: 12px 10px 0;
+  padding-top: 12px;
+  border-block-start: 1px solid var(--ant-color-border-secondary);
+}
+
+.desktopSidebarStatusLine {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  margin-bottom: 6px;
+}
+
+.desktopSidebarStatusLink.ant-btn {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  padding: 0;
+  overflow: hidden;
+  font-size: 12px;
+  line-height: 1.35;
+  text-align: start;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.desktopNavMenu.ant-menu-inline .ant-menu-item {
+  height: 34px;
+  margin: 2px 0;
+  padding-inline: 12px !important;
+  border-radius: 7px;
+  line-height: 34px;
+}
+
+.desktopNavMenu .ant-menu-item-selected {
+  background: color-mix(in srgb, var(--ant-color-primary) 14%, transparent) !important;
+}
+
+.desktopNavLabel {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+}
+
+.desktopNavLabel .anticon {
+  width: 18px;
+  color: var(--ant-color-text-secondary);
 }
 
 .moduleNav {
@@ -139,7 +241,7 @@ textarea {
 }
 
 .runtimeTag {
-  min-width: 58px;
+  min-width: 54px;
   margin-inline-end: 2px;
   text-align: center;
 }
@@ -167,6 +269,37 @@ h2 {
   width: 100%;
 }
 
+.loadingOverlayHost {
+  position: relative;
+}
+
+.loadingOverlay {
+  position: absolute;
+  z-index: 18;
+  inset: 0;
+  display: flex;
+  min-height: 120px;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: 10px;
+  padding: 18px;
+  background: color-mix(in srgb, var(--ant-color-bg-container) 82%, transparent);
+  color: var(--ant-color-text-secondary);
+  text-align: center;
+  backdrop-filter: blur(1.5px);
+}
+
+.loadingOverlayCompact {
+  min-height: 88px;
+}
+
+.loadingOverlayText {
+  font-size: 13px;
+  font-weight: 650;
+  letter-spacing: 0;
+}
+
 .configActionBar {
   border-radius: 0;
 }
@@ -175,14 +308,59 @@ h2 {
   align-self: center;
 }
 
+.configSaveShelf {
+  position: absolute;
+  z-index: 25;
+  inset-inline-end: 18px;
+  inset-block-end: 16px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: min(560px, calc(100% - 36px));
+  padding: 10px 12px;
+  background: color-mix(in srgb, var(--ant-color-warning-bg) 78%, var(--ant-color-bg-elevated));
+  border: 1px solid var(--ant-color-warning-border);
+  border-radius: 8px;
+  box-shadow: 0 14px 36px rgba(15, 23, 42, 0.16);
+}
+
+.configSaveShelfText {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.configSaveShelfText strong,
+.configSaveShelfText span {
+  display: block;
+}
+
+.configSaveShelfText strong {
+  color: var(--ant-color-text);
+  font-size: 13px;
+}
+
+.configSaveShelfText span {
+  margin-top: 2px;
+  overflow: hidden;
+  color: var(--ant-color-text-secondary);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.configSaveShelfActions {
+  flex: 0 0 auto;
+}
+
 .workspace {
-  padding: 18px 20px 24px;
+  padding: 20px 22px;
   display: flex;
   flex-direction: column;
-  gap: 18px;
+  gap: 14px;
   flex: 1;
   min-width: 0;
   min-height: 0;
+  overflow: auto;
 }
 
 .workspace > .ant-tabs {
@@ -195,10 +373,13 @@ h2 {
 
 .desktopStatusBar {
   display: flex;
+  flex: 0 0 34px;
   align-items: center;
   gap: 16px;
   height: 34px;
-  padding: 0 20px;
+  min-height: 34px;
+  max-height: 34px;
+  padding: 0 18px;
   background: var(--ant-color-bg-container);
   border-block-start: 1px solid var(--ant-color-border-secondary);
   overflow: hidden;
@@ -232,31 +413,30 @@ h2 {
   font-weight: 700;
 }
 
-.notificationViewport {
-  position: fixed;
-  right: 18px;
-  bottom: 18px;
-  z-index: 50;
-  display: flex;
-  width: min(380px, calc(100vw - 36px));
-  max-height: calc(100vh - 36px);
-  flex-direction: column-reverse;
-  gap: 10px;
-  margin: 0;
-  padding: 0;
-  list-style: none;
-  pointer-events: none;
-}
-
-.notificationViewport .ant-alert {
-  pointer-events: auto;
-}
-
 .desktopHomeHeader {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
   gap: 16px;
+}
+
+.desktopHome {
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.desktopHomeContent {
+  display: flex;
+  min-height: 0;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.desktopHomeHeader h2.ant-typography {
+  margin: 0 0 4px;
+  font-size: 21px;
 }
 
 .homeStatusGrid,
@@ -277,7 +457,7 @@ h2 {
 .homePane {
   display: flex;
   min-width: 0;
-  min-height: 178px;
+  min-height: 0;
   flex-direction: column;
   gap: 12px;
   padding: 16px 18px;
@@ -288,7 +468,7 @@ h2 {
 
 .homePaneMain,
 .homePaneSide {
-  min-height: 238px;
+  min-height: 0;
 }
 
 .homePaneHeader {
@@ -319,6 +499,38 @@ h2 {
 .pageWorkbench {
   width: 100%;
   flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  overflow: hidden;
+}
+
+.pageWorkbench > .workbenchToolbar {
+  min-height: 0;
+  padding: 0;
+  background: transparent;
+  border-block-end: 0;
+}
+
+.pageWorkbench > .workbenchMain,
+.pageWorkbench > .workbenchBody > .workbenchMain,
+.pageWorkbench > .workbenchBody > .workbenchInspector,
+.pageWorkbench > .workbenchSettingsShell > .workbenchSettingsContent {
+  padding: 0;
+}
+
+.pageWorkbench > .workbenchBody {
+  gap: 12px;
+}
+
+.pageWorkbench > .workbenchBody > .workbenchInspector {
+  background: transparent;
+  border-inline-start: 0;
+}
+
+.systemDnsEmbedded {
+  width: 100%;
   min-height: 0;
   display: flex;
   flex-direction: column;
@@ -386,6 +598,63 @@ h2 {
   padding: 12px;
 }
 
+.resolverOptionsBar {
+  display: grid;
+  grid-template-columns: auto minmax(86px, 0.36fr) minmax(260px, 1.2fr) minmax(150px, 0.48fr) auto;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  margin-bottom: 10px;
+  padding: 8px 10px;
+  background: var(--ant-color-fill-quaternary);
+  border: 1px solid var(--ant-color-border-secondary);
+  border-radius: 6px;
+}
+
+.resolverOptionsTitle {
+  color: var(--ant-color-text-secondary);
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.resolverOptionField,
+.resolverOptionSwitch {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: 7px;
+}
+
+.resolverOptionField > span,
+.resolverOptionSwitch > span {
+  flex: 0 0 auto;
+  color: var(--ant-color-text-secondary);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.resolverOptionField .ant-input,
+.resolverOptionField .ant-select {
+  width: 100%;
+}
+
+.resolverOptionFieldNarrow {
+  min-width: 86px;
+}
+
+.resolverOptionFieldWide {
+  min-width: 0;
+}
+
+.resolverOptionFieldSelect {
+  min-width: 150px;
+}
+
+.resolverOptionSwitch {
+  justify-content: flex-end;
+}
+
 .workbenchInspector {
   padding: 12px;
   border-inline-start: 1px solid var(--ant-color-border-secondary);
@@ -420,6 +689,13 @@ h2 {
   gap: 8px;
   min-width: 0;
   font-weight: 700;
+}
+
+.workbenchPanelTitleGroup {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+  gap: 8px;
 }
 
 .workbenchPanelBody {
@@ -479,21 +755,37 @@ h2 {
   color: var(--ant-color-text-secondary);
 }
 
-.workbenchSettingsBody {
-  grid-template-columns: minmax(0, 0.24fr) minmax(0, 1fr);
+.workbenchSettingsShell {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+  gap: 10px;
+  overflow: hidden;
 }
 
-.workbenchSideNav {
-  padding: 8px;
-  border-inline-end: 1px solid var(--ant-color-border-secondary);
-  background: var(--ant-color-fill-quaternary);
+.workbenchSettingsTabs {
+  flex: 0 0 auto;
+  padding: 0 12px;
+  border-block-end: 1px solid var(--ant-color-border-secondary);
+  background: var(--ant-color-bg-container);
 }
 
-.workbenchSideNav .ant-segmented {
-  width: 100%;
+.workbenchSettingsTabs .ant-tabs-nav {
+  margin: 0;
+}
+
+.workbenchSettingsTabs .ant-tabs-tab {
+  padding-block: 11px;
+}
+
+.workbenchSettingsTabs .ant-tabs-content-holder {
+  display: none;
 }
 
 .workbenchSettingsContent {
+  flex: 1 1 auto;
   min-width: 0;
   min-height: 0;
   overflow: auto;
@@ -543,6 +835,67 @@ h2 {
   place-items: center;
 }
 
+.lookupBody {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+}
+
+.lookupBody > .workbenchMain {
+  padding: 0;
+}
+
+.lookupAnswerPanelBody {
+  min-height: 168px;
+}
+
+.lookupAnswerList .ant-list-empty-text {
+  padding: 28px 12px;
+}
+
+.lookupToolbar {
+  justify-content: flex-start;
+}
+
+.lookupSearchControl {
+  width: min(620px, 100%);
+}
+
+.lookupTypeSelect {
+  width: 104px;
+}
+
+.lookupDomainInput {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.lookupSearchButton {
+  width: 92px;
+}
+
+.lookupAnswerItem {
+  padding: 10px 12px !important;
+}
+
+.lookupAnswerItem .ant-list-item-meta {
+  min-width: 0;
+  align-items: flex-start;
+}
+
+.lookupAnswerItem .ant-list-item-meta-title,
+.lookupAnswerItem .ant-list-item-meta-description {
+  min-width: 0;
+  margin-bottom: 0;
+}
+
+.lookupAnswerValue {
+  max-width: 100%;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: 12px;
+}
+
 .workbenchFluidInput {
   flex: 1 1 18rem;
   min-width: 0;
@@ -556,6 +909,26 @@ h2 {
 .workbenchInlineSelect,
 .workbenchInlineNumber {
   width: 100%;
+}
+
+.workbenchTagsSelect.ant-select-multiple .ant-select-selection-overflow {
+  gap: 2px 0;
+}
+
+.workbenchTagsSelect.ant-select-multiple .ant-select-selector {
+  min-height: 32px;
+  padding-block: 2px;
+}
+
+.resolverOptionField .ant-select-multiple .ant-select-selector {
+  min-height: 24px;
+  padding-block: 1px;
+}
+
+.upstreamEndpointInput,
+.proxyAddressInput {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: 12px;
 }
 
 .workbenchInlineFilter {
@@ -580,9 +953,12 @@ h2 {
 @media (max-width: 1180px) {
   .workbenchBody,
   .workbenchBodyWideInspector,
-  .workbenchSettingsBody,
   .settingRow {
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  .resolverOptionsBar {
+    grid-template-columns: auto minmax(92px, 0.4fr) minmax(220px, 1fr) minmax(150px, 0.6fr) auto;
   }
 
   .workbenchInspector {
@@ -590,8 +966,29 @@ h2 {
     border-block-start: 1px solid var(--ant-color-border-secondary);
   }
 
-  .workbenchSideNav {
-    border-inline-end: 0;
-    border-block-end: 1px solid var(--ant-color-border-secondary);
+}
+
+@media (max-width: 760px) {
+  .resolverOptionsBar {
+    grid-template-columns: minmax(0, 1fr);
+    align-items: stretch;
+  }
+
+  .resolverOptionField,
+  .resolverOptionSwitch {
+    justify-content: space-between;
+  }
+
+  .configSaveShelf {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .configSaveShelfActions {
+    width: 100%;
+  }
+
+  .configSaveShelfActions .ant-btn {
+    flex: 1 1 0;
   }
 }

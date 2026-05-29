@@ -1,5 +1,7 @@
 import { Button, Card, Empty, Input, List, Modal, Segmented, Select, Space, Table, Tag, Typography } from "antd";
-import { CloseOutlined, DeleteOutlined, ImportOutlined, PlusOutlined } from "@ant-design/icons";
+import { DeleteOutlined, ImportOutlined, PlusOutlined } from "@ant-design/icons";
+import type { SelectProps } from "antd";
+import type { MouseEvent, ReactNode } from "react";
 import { useState } from "react";
 
 import { matchOptions } from "../features/config/options";
@@ -15,6 +17,8 @@ type ImportPreviewItem = {
   valid: boolean;
   reason: string;
 };
+
+type TagRender = SelectProps["tagRender"];
 
 export function RulesPage({ doc, onChange }: ConfigPageProps) {
   const [importKind, setImportKind] = useState<ImportKind | null>(null);
@@ -50,32 +54,6 @@ export function RulesPage({ doc, onChange }: ConfigPageProps) {
     updateResolver({ routes: cfg.resolver.routes.filter((_, i) => i !== index) });
   }
 
-  function appendRouteUpstream(index: number, name: string) {
-    if (!name) {
-      return;
-    }
-    const row = parseRoute(cfg.resolver.routes[index]);
-    if (row.upstreams.includes(name)) {
-      return;
-    }
-    updateRoute(index, { ...row, upstreams: [...row.upstreams, name] });
-  }
-
-  function removeRouteUpstream(index: number, name: string) {
-    const row = parseRoute(cfg.resolver.routes[index]);
-    updateRoute(index, { ...row, upstreams: row.upstreams.filter((item) => item !== name) });
-  }
-
-  function routeUpstreamOptions(selected: string[]) {
-    const available = cfg.resolver.upstreams
-      .filter((item) => !selected.includes(item.name))
-      .map((item) => ({ value: item.name, label: item.name }));
-    if (available.length === 0) {
-      return [{ value: "", label: selected.length ? "已选择全部上游" : "暂无上游" }];
-    }
-    return [{ value: "", label: "添加上游" }, ...available];
-  }
-
   const importPreview = importKind === "hosts"
     ? parseHostImport(importDraft, cfg.resolver.hosts)
     : importKind === "routes"
@@ -84,10 +62,25 @@ export function RulesPage({ doc, onChange }: ConfigPageProps) {
   const importableItems = importPreview.filter((item) => item.valid);
   const hostRows = cfg.resolver.hosts.map((raw, index) => ({ key: `host-${index}`, index, row: parseHost(raw) }));
   const routeRows = cfg.resolver.routes.map((raw, index) => ({ key: `route-${index}`, index, row: parseRoute(raw) }));
+  const upstreamNames = new Set(cfg.resolver.upstreams.map((item) => item.name));
+  const routeUpstreamOptions = cfg.resolver.upstreams.map((item) => ({ value: item.name, label: item.name }));
+
+  const routeUpstreamTagRender: TagRender = (props) => {
+    const { label, value, closable, onClose } = props;
+    const missingUpstream = !upstreamNames.has(String(value));
+    return (
+      <SelectTag
+        color={missingUpstream ? "error" : "processing"}
+        label={missingUpstream ? `${label}（已失效）` : label}
+        closable={closable}
+        onClose={onClose}
+      />
+    );
+  };
 
   function openImport(kind: ImportKind) {
     setImportKind(kind);
-    setImportDraft(kind === "hosts" ? "127.0.0.1 example.local\n::1 ipv6.local" : `suffix:example.com=${cfg.resolver.upstreams[0]?.name || "upstream-1"}`);
+    setImportDraft("");
   }
 
   function closeImport() {
@@ -117,19 +110,19 @@ export function RulesPage({ doc, onChange }: ConfigPageProps) {
               value={activeRuleKind}
               onChange={(value) => setActiveRuleKind(value as ImportKind)}
               options={[
-                { value: "hosts", label: "固定解析" },
-                { value: "routes", label: "路由规则" }
+                { value: "hosts", label: "Hosts" },
+                { value: "routes", label: "域名分流" }
               ]}
             />
-            <Tag>{cfg.resolver.hosts.length} 条固定解析</Tag>
-            <Tag>{cfg.resolver.routes.length} 条路由</Tag>
+            <Tag>{cfg.resolver.hosts.length} 条 Hosts</Tag>
+            <Tag>{cfg.resolver.routes.length} 条分流</Tag>
           </div>
           <div className="workbenchToolbarActions">
             <Button icon={<ImportOutlined />} onClick={() => openImport(activeRuleKind)}>批量导入</Button>
             {activeRuleKind === "hosts" ? (
-              <Button type="primary" icon={<PlusOutlined />} onClick={() => updateResolver({ hosts: [...cfg.resolver.hosts, "example.local=127.0.0.1"] })}>新增解析</Button>
+              <Button type="primary" icon={<PlusOutlined />} onClick={() => updateResolver({ hosts: [...cfg.resolver.hosts, formatHost({ domain: "", ips: "" })] })}>新增记录</Button>
             ) : (
-              <Button type="primary" icon={<PlusOutlined />} onClick={() => updateResolver({ routes: [...cfg.resolver.routes, defaultRoute(cfg.resolver.upstreams[0]?.name || "")] })}>新增路由</Button>
+              <Button type="primary" icon={<PlusOutlined />} onClick={() => updateResolver({ routes: [...cfg.resolver.routes, defaultRoute(cfg.resolver.upstreams[0]?.name || "")] })}>新增分流</Button>
             )}
           </div>
         </div>
@@ -138,8 +131,7 @@ export function RulesPage({ doc, onChange }: ConfigPageProps) {
           {activeRuleKind === "hosts" ? (
             <div className="workbenchPanel">
               <div className="workbenchPanelHeader">
-                <span className="workbenchPanelTitle">固定解析</span>
-                <Typography.Text type="secondary">命中后直接返回这里的 IP，不再请求上游。</Typography.Text>
+                <span className="workbenchPanelTitle">Hosts</span>
               </div>
               <div className="workbenchPanelBodyFlush">
                 <Table
@@ -148,7 +140,7 @@ export function RulesPage({ doc, onChange }: ConfigPageProps) {
                   pagination={false}
                   scroll={{ x: "max-content" }}
                   dataSource={hostRows}
-                  locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="还没有固定解析记录" /> }}
+                  locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="还没有 Hosts 记录" /> }}
                   columns={[
                     {
                       title: "域名",
@@ -161,7 +153,15 @@ export function RulesPage({ doc, onChange }: ConfigPageProps) {
                       title: "IP 地址",
                       dataIndex: ["row", "ips"],
                       render: (_value, record) => (
-                        <Input value={record.row.ips} onChange={(event) => updateHost(record.index, { ...record.row, ips: event.target.value })} placeholder="127.0.0.1, ::1" />
+                        <Select
+                          className="workbenchInlineSelect workbenchTagsSelect"
+                          mode="tags"
+                          value={splitList(record.row.ips)}
+                          onChange={(values) => updateHost(record.index, { ...record.row, ips: values.join(", ") })}
+                          placeholder="127.0.0.1, ::1"
+                          open={false}
+                          suffixIcon={null}
+                        />
                       )
                     },
                     {
@@ -169,7 +169,7 @@ export function RulesPage({ doc, onChange }: ConfigPageProps) {
                       width: 48,
                       align: "right",
                       render: (_value, record) => (
-                        <Button icon={<DeleteOutlined />} onClick={() => removeHost(record.index)} aria-label="删除固定解析" />
+                        <Button icon={<DeleteOutlined />} onClick={() => removeHost(record.index)} aria-label="删除 Hosts 记录" />
                       )
                     }
                   ]}
@@ -179,8 +179,7 @@ export function RulesPage({ doc, onChange }: ConfigPageProps) {
           ) : (
             <div className="workbenchPanel">
               <div className="workbenchPanelHeader">
-                <span className="workbenchPanelTitle">路由规则</span>
-                <Typography.Text type="secondary">命中的域名走指定上游；未命中时按上游顺序解析。</Typography.Text>
+                <span className="workbenchPanelTitle">域名分流</span>
               </div>
               <div className="workbenchPanelBodyFlush">
                 <Table
@@ -189,7 +188,7 @@ export function RulesPage({ doc, onChange }: ConfigPageProps) {
                   pagination={false}
                   scroll={{ x: "max-content" }}
                   dataSource={routeRows}
-                  locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="还没有自定义路由，默认会按上游顺序解析" /> }}
+                  locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="还没有域名分流" /> }}
                   columns={[
                     {
                       title: "匹配方式",
@@ -208,31 +207,15 @@ export function RulesPage({ doc, onChange }: ConfigPageProps) {
                     {
                       title: "目标上游",
                       render: (_value, record) => (
-                        <Space orientation="vertical" size={8} className="pageFill">
-                          <Space size={[4, 4]} wrap>
-                            {record.row.upstreams.map((name) => {
-                              const missingUpstream = !cfg.resolver.upstreams.some((item) => item.name === name);
-                              return (
-                                <Tag
-                                  key={name}
-                                  color={missingUpstream ? "error" : "processing"}
-                                  closable
-                                  closeIcon={<CloseOutlined />}
-                                  onClose={() => removeRouteUpstream(record.index, name)}
-                                >
-                                  {name}{missingUpstream ? "（已失效）" : ""}
-                                </Tag>
-                              );
-                            })}
-                            {record.row.upstreams.length === 0 ? <Tag color="warning">未选择上游</Tag> : null}
-                          </Space>
-                          <Select
-                            className="workbenchInlineSelect"
-                            value=""
-                            onChange={(value) => appendRouteUpstream(record.index, value)}
-                            options={routeUpstreamOptions(record.row.upstreams)}
-                          />
-                        </Space>
+                        <Select
+                          className="workbenchInlineSelect workbenchTagsSelect"
+                          mode="multiple"
+                          value={record.row.upstreams}
+                          onChange={(values) => updateRoute(record.index, { ...record.row, upstreams: values })}
+                          options={routeUpstreamOptions}
+                          tagRender={routeUpstreamTagRender}
+                          placeholder="选择上游"
+                        />
                       )
                     },
                     {
@@ -255,7 +238,7 @@ export function RulesPage({ doc, onChange }: ConfigPageProps) {
                       width: 48,
                       align: "right",
                       render: (_value, record) => (
-                        <Button icon={<DeleteOutlined />} onClick={() => removeRoute(record.index)} aria-label="删除路由" />
+                        <Button icon={<DeleteOutlined />} onClick={() => removeRoute(record.index)} aria-label="删除分流规则" />
                       )
                     }
                   ]}
@@ -268,7 +251,7 @@ export function RulesPage({ doc, onChange }: ConfigPageProps) {
 
       <Modal
         open={Boolean(importKind)}
-        title={importKind === "hosts" ? "批量导入固定解析" : "批量导入路由规则"}
+        title={importKind === "hosts" ? "批量导入 Hosts" : "批量导入域名分流"}
         width={720}
         okText={`导入 ${importableItems.length} 条`}
         okButtonProps={{ disabled: importableItems.length === 0 }}
@@ -277,12 +260,10 @@ export function RulesPage({ doc, onChange }: ConfigPageProps) {
         onCancel={closeImport}
       >
         <Space orientation="vertical" size={12} className="pageFill">
-          <Typography.Text type="secondary">
-            {importKind === "hosts" ? "支持 hosts 文件格式，也支持 domain=ip1,ip2。" : "支持 suffix:domain=upstream1,upstream2；省略匹配方式时默认 suffix。"}
-          </Typography.Text>
           <Input.TextArea
             value={importDraft}
             onChange={(event) => setImportDraft(event.target.value)}
+            placeholder={importKind === "hosts" ? "127.0.0.1 example.local\nexample.local=127.0.0.1,::1" : "suffix:example.com=cloudflare,google"}
             spellCheck={false}
             autoSize={{ minRows: 8, maxRows: 12 }}
           />
@@ -373,7 +354,7 @@ function parseRouteImport(raw: string, existing: string[], fallbackUpstream: str
       value,
       summary: `${row.match}:${row.domain} -> ${row.upstreams.join(", ") || "未选择上游"}`,
       valid: !duplicate && row.upstreams.length > 0,
-      reason: duplicate ? "路由已存在，已跳过" : "未指定上游"
+      reason: duplicate ? "分流规则已存在，已跳过" : "未指定上游"
     }];
   });
 }
@@ -418,6 +399,25 @@ function looksLikeIp(value: string): boolean {
 function routeKey(raw: string): string {
   const row = parseRoute(raw);
   return `${row.match}:${row.domain.toLowerCase()}=${row.upstreams.join(",")}`;
+}
+
+function SelectTag({ color, label, closable, onClose }: { color?: string; label: ReactNode; closable: boolean; onClose: () => void }) {
+  function preventSelectToggle(event: MouseEvent<HTMLSpanElement>) {
+    event.preventDefault();
+    event.stopPropagation();
+  }
+
+  return (
+    <Tag
+      color={color}
+      onMouseDown={preventSelectToggle}
+      closable={closable}
+      onClose={onClose}
+      style={{ marginInlineEnd: 4 }}
+    >
+      {label}
+    </Tag>
+  );
 }
 
 function LoadingPanel() {
