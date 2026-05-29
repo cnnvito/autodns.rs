@@ -25,6 +25,22 @@ Run the desktop app in development mode:
 make dev
 ```
 
+Direct Tauri command:
+
+```bash
+cd src-tauri
+cargo tauri dev --config tauri.dev.conf.json
+```
+
+Development mode uses a separate Tauri identity and local data directory from
+release builds:
+
+```text
+dev:  com.autodns.desktop.dev  -> autodns-dev/autodns.sqlite3
+prod: com.autodns.desktop      -> autodns/autodns.sqlite3
+test: com.autodns.desktop.test -> autodns-test/autodns.sqlite3
+```
+
 ## Build
 
 Build the current platform bundle:

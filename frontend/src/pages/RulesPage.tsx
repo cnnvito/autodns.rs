@@ -1,9 +1,9 @@
+import { Button, Card, Empty, Input, List, Modal, Segmented, Select, Space, Table, Tag, Typography } from "antd";
+import { CloseOutlined, DeleteOutlined, ImportOutlined, PlusOutlined } from "@ant-design/icons";
 import { useState } from "react";
-import { FileInput, Plus, Trash2, X } from "lucide-react";
 
 import { matchOptions } from "../features/config/options";
 import { defaultRoute, formatHost, formatRoute, parseHost, parseRoute } from "../features/config/transforms";
-import { SelectField } from "../shared/ui";
 import type { ConfigPageProps } from "../features/config/doc";
 
 type ImportKind = "hosts" | "routes";
@@ -19,6 +19,7 @@ type ImportPreviewItem = {
 export function RulesPage({ doc, onChange }: ConfigPageProps) {
   const [importKind, setImportKind] = useState<ImportKind | null>(null);
   const [importDraft, setImportDraft] = useState("");
+  const [activeRuleKind, setActiveRuleKind] = useState<ImportKind>("hosts");
 
   if (!doc) {
     return <LoadingPanel />;
@@ -81,6 +82,8 @@ export function RulesPage({ doc, onChange }: ConfigPageProps) {
       ? parseRouteImport(importDraft, cfg.resolver.routes, cfg.resolver.upstreams[0]?.name || "")
       : [];
   const importableItems = importPreview.filter((item) => item.valid);
+  const hostRows = cfg.resolver.hosts.map((raw, index) => ({ key: `host-${index}`, index, row: parseHost(raw) }));
+  const routeRows = cfg.resolver.routes.map((raw, index) => ({ key: `route-${index}`, index, row: parseRoute(raw) }));
 
   function openImport(kind: ImportKind) {
     setImportKind(kind);
@@ -106,142 +109,200 @@ export function RulesPage({ doc, onChange }: ConfigPageProps) {
 
   return (
     <>
-      <section className="pageStack">
-        <section className="panel configPanel">
-        <header>
-          <div>
-            <h2>固定解析</h2>
-            <p>命中后直接返回这里的 IP，不再请求上游。</p>
+      <section className="pageWorkbench">
+        <div className="workbenchToolbar">
+          <div className="workbenchToolbarMain">
+            <span className="workbenchTitle">规则工作台</span>
+            <Segmented
+              value={activeRuleKind}
+              onChange={(value) => setActiveRuleKind(value as ImportKind)}
+              options={[
+                { value: "hosts", label: "固定解析" },
+                { value: "routes", label: "路由规则" }
+              ]}
+            />
+            <Tag>{cfg.resolver.hosts.length} 条固定解析</Tag>
+            <Tag>{cfg.resolver.routes.length} 条路由</Tag>
           </div>
-          <div className="panelHeaderActions">
-            <button className="iconTextButton" onClick={() => openImport("hosts")}>
-              <FileInput size={15} /> 批量导入
-            </button>
-            <button className="iconTextButton" onClick={() => updateResolver({ hosts: [...cfg.resolver.hosts, "example.local=127.0.0.1"] })}>
-              <Plus size={15} /> 新增解析
-            </button>
+          <div className="workbenchToolbarActions">
+            <Button icon={<ImportOutlined />} onClick={() => openImport(activeRuleKind)}>批量导入</Button>
+            {activeRuleKind === "hosts" ? (
+              <Button type="primary" icon={<PlusOutlined />} onClick={() => updateResolver({ hosts: [...cfg.resolver.hosts, "example.local=127.0.0.1"] })}>新增解析</Button>
+            ) : (
+              <Button type="primary" icon={<PlusOutlined />} onClick={() => updateResolver({ routes: [...cfg.resolver.routes, defaultRoute(cfg.resolver.upstreams[0]?.name || "")] })}>新增路由</Button>
+            )}
           </div>
-        </header>
-        <div className="dataTable">
-          <div className="tableHeader hostTable">
-            <span>域名</span>
-            <span>IP 地址</span>
-            <span />
-          </div>
-          {cfg.resolver.hosts.map((raw, index) => {
-            const row = parseHost(raw);
-            return (
-              <div className="tableRow hostTable" key={`host-${index}`}>
-                <input value={row.domain} onChange={(event) => updateHost(index, { ...row, domain: event.target.value })} placeholder="example.local" />
-                <input value={row.ips} onChange={(event) => updateHost(index, { ...row, ips: event.target.value })} placeholder="127.0.0.1, ::1" />
-                <button className="iconOnlyButton" onClick={() => removeHost(index)} aria-label="删除固定解析">
-                  <Trash2 size={15} />
-                </button>
-              </div>
-            );
-          })}
-          {cfg.resolver.hosts.length === 0 ? <p className="emptyState">还没有固定解析记录。</p> : null}
         </div>
-        </section>
 
-        <section className="panel configPanel">
-        <header>
-          <div>
-            <h2>路由规则</h2>
-            <p>命中的域名走指定上游；未命中时按上游顺序解析。</p>
-          </div>
-          <div className="panelHeaderActions">
-            <button className="iconTextButton" onClick={() => openImport("routes")}>
-              <FileInput size={15} /> 批量导入
-            </button>
-            <button className="iconTextButton" onClick={() => updateResolver({ routes: [...cfg.resolver.routes, defaultRoute(cfg.resolver.upstreams[0]?.name || "")] })}>
-              <Plus size={15} /> 新增路由
-            </button>
-          </div>
-        </header>
-        <div className="dataTable">
-          <div className="tableHeader routeTable">
-            <span>匹配方式</span>
-            <span>域名</span>
-            <span>目标上游</span>
-            <span>状态</span>
-            <span />
-          </div>
-          {cfg.resolver.routes.map((raw, index) => {
-            const row = parseRoute(raw);
-            const status = cfg.resolver.routeStatuses?.[index];
-            const missing = row.upstreams.filter((name) => !cfg.resolver.upstreams.some((item) => item.name === name));
-            const invalidReason = status?.invalidReason || (!row.upstreams.length ? "未选择上游" : missing.length ? `引用的上游已删除：${missing.join(", ")}` : "");
-            return (
-              <div className={invalidReason ? "tableRow routeTable invalidRouteRow" : "tableRow routeTable"} key={`route-${index}`}>
-                <SelectField value={row.match} onChange={(value) => updateRoute(index, { ...row, match: value })} options={matchOptions} />
-                <input value={row.domain} onChange={(event) => updateRoute(index, { ...row, domain: event.target.value })} placeholder="example.com" />
-                <div className="routeUpstreamPicker">
-                  <div className="routeUpstreamChips">
-                    {row.upstreams.map((name) => {
-                      const missingUpstream = !cfg.resolver.upstreams.some((item) => item.name === name);
-                      return (
-                        <span className={missingUpstream ? "routeUpstreamChip missing" : "routeUpstreamChip"} key={name}>
-                          {name}{missingUpstream ? "（已失效）" : ""}
-                          <button onClick={() => removeRouteUpstream(index, name)} aria-label={`移除 ${name}`}>
-                            <X size={12} />
-                          </button>
-                        </span>
-                      );
-                    })}
-                    {row.upstreams.length === 0 ? <span className="routeUpstreamEmpty">未选择上游</span> : null}
-                  </div>
-                  <SelectField value="" onChange={(value) => appendRouteUpstream(index, value)} options={routeUpstreamOptions(row.upstreams)} />
-                </div>
-                <span className={invalidReason ? "routeState invalid" : "routeState active"}>{invalidReason ? "已失效" : "有效"}</span>
-                <button className="iconOnlyButton" onClick={() => removeRoute(index)} aria-label="删除路由">
-                  <Trash2 size={15} />
-                </button>
-                {invalidReason ? <p className="routeInvalidReason">{invalidReason}</p> : null}
+        <main className="workbenchMain">
+          {activeRuleKind === "hosts" ? (
+            <div className="workbenchPanel">
+              <div className="workbenchPanelHeader">
+                <span className="workbenchPanelTitle">固定解析</span>
+                <Typography.Text type="secondary">命中后直接返回这里的 IP，不再请求上游。</Typography.Text>
               </div>
-            );
-          })}
-          {cfg.resolver.routes.length === 0 ? <p className="emptyState">还没有自定义路由，默认会按上游顺序解析。</p> : null}
-        </div>
-        </section>
+              <div className="workbenchPanelBodyFlush">
+                <Table
+                  rowKey="key"
+                  size="small"
+                  pagination={false}
+                  scroll={{ x: "max-content" }}
+                  dataSource={hostRows}
+                  locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="还没有固定解析记录" /> }}
+                  columns={[
+                    {
+                      title: "域名",
+                      dataIndex: ["row", "domain"],
+                      render: (_value, record) => (
+                        <Input value={record.row.domain} onChange={(event) => updateHost(record.index, { ...record.row, domain: event.target.value })} placeholder="example.local" />
+                      )
+                    },
+                    {
+                      title: "IP 地址",
+                      dataIndex: ["row", "ips"],
+                      render: (_value, record) => (
+                        <Input value={record.row.ips} onChange={(event) => updateHost(record.index, { ...record.row, ips: event.target.value })} placeholder="127.0.0.1, ::1" />
+                      )
+                    },
+                    {
+                      title: "",
+                      width: 48,
+                      align: "right",
+                      render: (_value, record) => (
+                        <Button icon={<DeleteOutlined />} onClick={() => removeHost(record.index)} aria-label="删除固定解析" />
+                      )
+                    }
+                  ]}
+                />
+              </div>
+            </div>
+          ) : (
+            <div className="workbenchPanel">
+              <div className="workbenchPanelHeader">
+                <span className="workbenchPanelTitle">路由规则</span>
+                <Typography.Text type="secondary">命中的域名走指定上游；未命中时按上游顺序解析。</Typography.Text>
+              </div>
+              <div className="workbenchPanelBodyFlush">
+                <Table
+                  rowKey="key"
+                  size="small"
+                  pagination={false}
+                  scroll={{ x: "max-content" }}
+                  dataSource={routeRows}
+                  locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="还没有自定义路由，默认会按上游顺序解析" /> }}
+                  columns={[
+                    {
+                      title: "匹配方式",
+                      width: 150,
+                      render: (_value, record) => (
+                        <Select className="workbenchInlineSelect" value={record.row.match} onChange={(value) => updateRoute(record.index, { ...record.row, match: value })} options={matchOptions} />
+                      )
+                    },
+                    {
+                      title: "域名",
+                      width: 220,
+                      render: (_value, record) => (
+                        <Input value={record.row.domain} onChange={(event) => updateRoute(record.index, { ...record.row, domain: event.target.value })} placeholder="example.com" />
+                      )
+                    },
+                    {
+                      title: "目标上游",
+                      render: (_value, record) => (
+                        <Space orientation="vertical" size={8} className="pageFill">
+                          <Space size={[4, 4]} wrap>
+                            {record.row.upstreams.map((name) => {
+                              const missingUpstream = !cfg.resolver.upstreams.some((item) => item.name === name);
+                              return (
+                                <Tag
+                                  key={name}
+                                  color={missingUpstream ? "error" : "processing"}
+                                  closable
+                                  closeIcon={<CloseOutlined />}
+                                  onClose={() => removeRouteUpstream(record.index, name)}
+                                >
+                                  {name}{missingUpstream ? "（已失效）" : ""}
+                                </Tag>
+                              );
+                            })}
+                            {record.row.upstreams.length === 0 ? <Tag color="warning">未选择上游</Tag> : null}
+                          </Space>
+                          <Select
+                            className="workbenchInlineSelect"
+                            value=""
+                            onChange={(value) => appendRouteUpstream(record.index, value)}
+                            options={routeUpstreamOptions(record.row.upstreams)}
+                          />
+                        </Space>
+                      )
+                    },
+                    {
+                      title: "状态",
+                      width: 180,
+                      render: (_value, record) => {
+                        const status = cfg.resolver.routeStatuses?.[record.index];
+                        const missing = record.row.upstreams.filter((name) => !cfg.resolver.upstreams.some((item) => item.name === name));
+                        const invalidReason = status?.invalidReason || (!record.row.upstreams.length ? "未选择上游" : missing.length ? `引用的上游已删除：${missing.join(", ")}` : "");
+                        return (
+                          <Space orientation="vertical" size={4}>
+                            <Tag color={invalidReason ? "error" : "success"}>{invalidReason ? "已失效" : "有效"}</Tag>
+                            {invalidReason ? <Typography.Text type="danger">{invalidReason}</Typography.Text> : null}
+                          </Space>
+                        );
+                      }
+                    },
+                    {
+                      title: "",
+                      width: 48,
+                      align: "right",
+                      render: (_value, record) => (
+                        <Button icon={<DeleteOutlined />} onClick={() => removeRoute(record.index)} aria-label="删除路由" />
+                      )
+                    }
+                  ]}
+                />
+              </div>
+            </div>
+          )}
+        </main>
       </section>
 
-      {importKind ? (
-        <div className="modalLayer" role="presentation">
-          <section className="confirmDialog importDialog" role="dialog" aria-modal="true" aria-labelledby="import-dialog-title">
-            <header>
-              <h2 id="import-dialog-title">{importKind === "hosts" ? "批量导入固定解析" : "批量导入路由规则"}</h2>
-              <p>{importKind === "hosts" ? "支持 hosts 文件格式，也支持 domain=ip1,ip2。" : "支持 suffix:domain=upstream1,upstream2；省略匹配方式时默认 suffix。"}</p>
-            </header>
-            <textarea
-              className="importTextarea"
-              value={importDraft}
-              onChange={(event) => setImportDraft(event.target.value)}
-              spellCheck={false}
-            />
-            <div className="importSummary">
-              <span>{importPreview.length} 行已解析</span>
-              <strong>{importableItems.length} 条可导入</strong>
-            </div>
-            <div className="importPreviewList">
-              {importPreview.map((item, index) => (
-                <article className={item.valid ? "importPreviewRow" : "importPreviewRow invalid"} key={`${item.raw}-${index}`}>
-                  <div>
-                    <strong>{item.summary}</strong>
-                    <span>{item.raw}</span>
-                  </div>
-                  <small>{item.valid ? "可导入" : item.reason}</small>
-                </article>
-              ))}
-              {importPreview.length === 0 ? <div className="emptyList">粘贴内容后会在这里预览。</div> : null}
-            </div>
-            <div className="confirmActions">
-              <button onClick={closeImport}>取消</button>
-              <button className="primary" onClick={commitImport} disabled={importableItems.length === 0}>导入 {importableItems.length} 条</button>
-            </div>
-          </section>
-        </div>
-      ) : null}
+      <Modal
+        open={Boolean(importKind)}
+        title={importKind === "hosts" ? "批量导入固定解析" : "批量导入路由规则"}
+        width={720}
+        okText={`导入 ${importableItems.length} 条`}
+        okButtonProps={{ disabled: importableItems.length === 0 }}
+        cancelText="取消"
+        onOk={commitImport}
+        onCancel={closeImport}
+      >
+        <Space orientation="vertical" size={12} className="pageFill">
+          <Typography.Text type="secondary">
+            {importKind === "hosts" ? "支持 hosts 文件格式，也支持 domain=ip1,ip2。" : "支持 suffix:domain=upstream1,upstream2；省略匹配方式时默认 suffix。"}
+          </Typography.Text>
+          <Input.TextArea
+            value={importDraft}
+            onChange={(event) => setImportDraft(event.target.value)}
+            spellCheck={false}
+            autoSize={{ minRows: 8, maxRows: 12 }}
+          />
+          <Space>
+            <Tag>{importPreview.length} 行已解析</Tag>
+            <Tag color="processing">{importableItems.length} 条可导入</Tag>
+          </Space>
+          <List
+            size="small"
+            bordered
+            dataSource={importPreview}
+            locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="粘贴内容后会在这里预览" /> }}
+            renderItem={(item, index) => (
+              <List.Item key={`${item.raw}-${index}`} extra={<Tag color={item.valid ? "success" : "error"}>{item.valid ? "可导入" : item.reason}</Tag>}>
+                <List.Item.Meta title={item.summary} description={item.raw} />
+              </List.Item>
+            )}
+          />
+        </Space>
+      </Modal>
     </>
   );
 }
@@ -361,13 +422,8 @@ function routeKey(raw: string): string {
 
 function LoadingPanel() {
   return (
-    <section className="panel configPanel">
-      <header>
-        <div>
-          <h2>规则</h2>
-          <p>正在加载本地配置。</p>
-        </div>
-      </header>
-    </section>
+    <Card title="规则">
+      <Typography.Text type="secondary">正在加载本地配置。</Typography.Text>
+    </Card>
   );
 }

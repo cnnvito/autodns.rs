@@ -1,4 +1,4 @@
-use crate::desktop::*;
+use crate::{desktop::*, environment};
 use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -104,7 +104,7 @@ pub struct CoreLogConfig {
 
 pub fn desktop_config_dir() -> Result<PathBuf> {
     let dir = dirs::config_dir().ok_or_else(|| anyhow!("user config dir is not available"))?;
-    Ok(dir.join("autodns"))
+    Ok(dir.join(environment::app_dir_name()))
 }
 
 pub fn database_path() -> Result<PathBuf> {
@@ -121,7 +121,7 @@ pub fn default_local_config() -> CoreConfig {
     let mut cfg = CoreConfig {
         server: CoreServerConfig {
             mode: "udp".into(),
-            listen: "127.0.0.1:15353".into(),
+            listen: environment::default_listen_addr().into(),
             ..Default::default()
         },
         resolver: CoreResolverConfig {
@@ -899,6 +899,21 @@ mod tests {
             ..Default::default()
         }];
         cfg
+    }
+
+    #[test]
+    fn test_defaults_use_isolated_environment() {
+        let cfg = default_local_config();
+        let path = database_path().expect("database path");
+
+        assert_eq!(cfg.server.listen, "127.0.0.1:15453");
+        assert_eq!(
+            path.parent()
+                .and_then(|parent| parent.file_name())
+                .and_then(|name| name.to_str()),
+            Some("autodns-test")
+        );
+        assert_eq!(path.file_name().and_then(|name| name.to_str()), Some("autodns.sqlite3"));
     }
 
     #[test]

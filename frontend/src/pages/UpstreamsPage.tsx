@@ -1,12 +1,12 @@
+import { Button, Card, Col, Empty, Form, Input, Row, Select, Space, Switch, Table, Tag, Typography } from "antd";
+import { DeleteOutlined, HolderOutlined, PlusOutlined } from "@ant-design/icons";
 import type { DragEvent, KeyboardEvent } from "react";
 import { useEffect, useMemo, useState } from "react";
-import { GripVertical, Plus, Trash2 } from "lucide-react";
 
 import { proxyProtocolOptions, upstreamProtocolOptions } from "../features/config/options";
 import type { ConfigPageProps } from "../features/config/doc";
 import { defaultPortForProtocol, defaultPortForProxy } from "../features/config/transforms";
 import type { ProxyConfig, UpstreamConfig } from "../shared/types";
-import { SelectField, SwitchField } from "../shared/ui";
 
 type DragState = {
   fromIndex: number | null;
@@ -73,7 +73,7 @@ export function UpstreamsPage({ doc, onChange }: ConfigPageProps) {
     updateResolver({ upstreams });
   }
 
-  function startDrag(index: number, event: DragEvent<HTMLButtonElement>) {
+  function startDrag(index: number, event: DragEvent<HTMLElement>) {
     event.dataTransfer.effectAllowed = "move";
     event.dataTransfer.setData("text/plain", String(index));
     setDragState({ fromIndex: index, overIndex: index, order: naturalOrder });
@@ -120,7 +120,7 @@ export function UpstreamsPage({ doc, onChange }: ConfigPageProps) {
     setDragState({ fromIndex: null, overIndex: null, order: naturalOrder });
   }
 
-  function handleDragHandleKeyDown(index: number, event: KeyboardEvent<HTMLButtonElement>) {
+  function handleDragHandleKeyDown(index: number, event: KeyboardEvent<HTMLElement>) {
     if (event.key === "ArrowUp") {
       event.preventDefault();
       moveUpstream(index, -1);
@@ -161,162 +161,256 @@ export function UpstreamsPage({ doc, onChange }: ConfigPageProps) {
 
   const proxyOptions = [{ value: "", label: "直连" }, ...cfg.resolver.proxies.map((proxy) => ({ value: proxy.name, label: proxy.name }))];
   const bootstrapDns = cfg.resolver.bootstrapDns.join(", ");
+  const upstreamRows = visibleOrder.map((originalIndex, visualIndex) => ({ key: `upstream-${originalIndex}`, originalIndex, visualIndex, item: cfg.resolver.upstreams[originalIndex] }));
+  const proxyRows = cfg.resolver.proxies.map((item, index) => ({ key: `proxy-${index}`, item, index }));
 
   return (
-    <section className="pageStack">
-      <section className="panel configPanel">
-        <header>
-          <div>
-            <h2>上游 DNS</h2>
-            <p>按列表顺序解析。</p>
-          </div>
-          <button className="iconTextButton" onClick={addUpstream}><Plus size={15} /> 新增上游</button>
-        </header>
-        <div className="logicNote">
-          <strong>切换逻辑</strong>
-          <span>拿到答案即返回；无答案或出错时继续下一个，全部失败后返回最后的无记录响应或 SERVFAIL。</span>
+    <section className="pageWorkbench">
+      <div className="workbenchToolbar">
+        <div className="workbenchToolbarMain">
+          <span className="workbenchTitle">上游与代理</span>
+          <Tag>{cfg.resolver.upstreams.length} 个上游</Tag>
+          <Tag>{cfg.resolver.proxies.length} 个代理</Tag>
+          <Typography.Text type="secondary">按列表顺序解析，拿到答案即返回。</Typography.Text>
         </div>
-        <div className="dataTable">
-          <div className="upstreamHeaderRow">
-            <span />
-            <div className="tableHeader upstreamTable">
-              <span>排序</span>
-              <span>上游标识</span>
-              <span>协议</span>
-              <span>主机</span>
-              <span>端口</span>
-              <span>路径</span>
-              <span>SNI</span>
-              <span>代理</span>
-              <span />
-            </div>
+        <div className="workbenchToolbarActions">
+          <Button icon={<PlusOutlined />} onClick={addProxy}>新增代理</Button>
+          <Button type="primary" icon={<PlusOutlined />} onClick={addUpstream}>新增上游</Button>
+        </div>
+      </div>
+
+      <main className="workbenchMain">
+        <div className="workbenchPanel">
+          <div className="workbenchPanelHeader">
+            <span className="workbenchPanelTitle">解析选项</span>
+            <Typography.Text type="secondary">这些设置会影响全部上游请求。</Typography.Text>
           </div>
-          {visibleOrder.map((originalIndex, visualIndex) => {
-            const item = cfg.resolver.upstreams[originalIndex];
-            const isDoh = item.protocol === "http" || item.protocol === "https";
-            const serverNameEnabled = item.protocol === "dot" || isDoh;
-            const rowClassName = [
-              "upstreamDragRow",
-              dragState.fromIndex === originalIndex ? "isDragging" : "",
-              dragState.overIndex === originalIndex && isDragging ? "isDropTarget" : ""
-            ].filter(Boolean).join(" ");
-            return (
-              <div
-                className={rowClassName}
-                key={`upstream-${originalIndex}`}
-                onDragEnter={() => enterDropTarget(originalIndex)}
-                onDragOver={allowDrop}
-                onDrop={commitDrag}
-                onDragEnd={resetDrag}
-              >
-                <button
-                  className="iconOnlyButton dragHandle outsideDragHandle"
-                  draggable
-                  onDragStart={(event) => startDrag(originalIndex, event)}
-                  onKeyDown={(event) => handleDragHandleKeyDown(originalIndex, event)}
-                  aria-label={`拖动 ${item.name || `第 ${visualIndex + 1} 个上游`} 调整顺序`}
-                  title="拖动排序，键盘可用上下方向键"
-                >
-                  <GripVertical size={15} />
-                </button>
-                <div className="tableRow upstreamTable upstreamDataRow">
-                  <div className="rowOrder">
-                    <strong>{visualIndex + 1}</strong>
-                  </div>
-                  <input value={item.name} onChange={(event) => updateUpstream(originalIndex, { name: event.target.value })} placeholder="cloudflare" />
-                  <SelectField
-                    value={item.protocol}
-                    onChange={(value) => updateEndpoint(originalIndex, { protocol: value, port: item.port || defaultPortForProtocol(value) })}
+          <div className="workbenchPanelBody">
+            <Row gutter={[12, 8]}>
+              <Col xs={24} md={8}>
+                <Form.Item label="解析超时" layout="vertical">
+                  <Input value={cfg.resolver.timeout} onChange={(event) => updateResolver({ timeout: event.target.value })} placeholder="5s" />
+                </Form.Item>
+              </Col>
+              <Col xs={24} md={10}>
+                <Form.Item label="上游域名 fallback" layout="vertical">
+                  <Input value={bootstrapDns} onChange={(event) => updateBootstrapDns(event.target.value)} placeholder="1.1.1.1:53, 8.8.8.8:53" />
+                </Form.Item>
+              </Col>
+              <Col xs={24} md={6}>
+                <Form.Item label="IPv6" layout="vertical">
+                  <Switch checkedChildren="启用" unCheckedChildren="关闭" checked={cfg.resolver.ipv6Enabled} onChange={(checked) => updateResolver({ ipv6Enabled: checked })} />
+                </Form.Item>
+              </Col>
+              <Col xs={24} md={8}>
+                <Form.Item label="默认代理" layout="vertical">
+                  <Select
+                    value={cfg.resolver.defaultProxy}
+                    onChange={(value) => updateResolver({ defaultProxy: value })}
+                    options={[{ value: "", label: "无" }, ...cfg.resolver.proxies.map((proxy) => ({ value: proxy.name, label: proxy.name }))]}
+                  />
+                </Form.Item>
+              </Col>
+            </Row>
+          </div>
+        </div>
+
+        <div className="workbenchPanel">
+          <div className="workbenchPanelHeader">
+            <span className="workbenchPanelTitle">上游 DNS</span>
+            <Typography.Text type="secondary">拖动左侧把手调整优先级；无答案或出错时继续下一个上游。</Typography.Text>
+          </div>
+          <div className="workbenchPanelBodyFlush">
+          <Table
+            rowKey="key"
+            size="small"
+            pagination={false}
+            scroll={{ x: "max-content" }}
+            dataSource={upstreamRows}
+            onRow={(record) => ({
+              draggable: true,
+              onDragStart: (event) => startDrag(record.originalIndex, event),
+              onDragEnter: () => enterDropTarget(record.originalIndex),
+              onDragOver: allowDrop,
+              onDrop: commitDrag,
+              onDragEnd: resetDrag,
+              style: {
+                opacity: dragState.fromIndex === record.originalIndex ? 0.58 : 1,
+                transform: dragState.overIndex === record.originalIndex && isDragging ? "translateY(-1px)" : undefined
+              }
+            })}
+            columns={[
+              {
+                title: "",
+                width: 44,
+                render: (_value, record) => (
+                  <Button
+                    icon={<HolderOutlined />}
+                    onKeyDown={(event) => handleDragHandleKeyDown(record.originalIndex, event)}
+                    aria-label={`拖动 ${record.item.name || `第 ${record.visualIndex + 1} 个上游`} 调整顺序`}
+                    title="拖动排序，键盘可用上下方向键"
+                  />
+                )
+              },
+              { title: "排序", width: 64, render: (_value, record) => record.visualIndex + 1 },
+              {
+                title: "上游标识",
+                width: 160,
+                render: (_value, record) => (
+                  <Input value={record.item.name} onChange={(event) => updateUpstream(record.originalIndex, { name: event.target.value })} placeholder="cloudflare" />
+                )
+              },
+              {
+                title: "协议",
+                width: 130,
+                render: (_value, record) => (
+                  <Select
+                    className="workbenchInlineSelect"
+                    value={record.item.protocol}
+                    onChange={(value) => updateEndpoint(record.originalIndex, { protocol: value, port: record.item.port || defaultPortForProtocol(value) })}
                     options={upstreamProtocolOptions}
                   />
-                  <input value={item.host} onChange={(event) => updateEndpoint(originalIndex, { host: event.target.value })} placeholder="1.1.1.1" />
-                  <input value={item.port} onChange={(event) => updateEndpoint(originalIndex, { port: event.target.value })} placeholder={defaultPortForProtocol(item.protocol)} />
-                  <input
-                    value={isDoh ? item.path : ""}
-                    onChange={(event) => updateEndpoint(originalIndex, { path: event.target.value })}
-                    placeholder={isDoh ? "/dns-query" : "-"}
-                    disabled={!isDoh}
-                  />
-                  <input
-                    value={serverNameEnabled ? item.serverName : ""}
-                    onChange={(event) => updateUpstream(originalIndex, { serverName: event.target.value })}
-                    placeholder={serverNameEnabled ? "cloudflare-dns.com" : "-"}
-                    disabled={!serverNameEnabled}
-                  />
-                  <SelectField value={item.proxy} onChange={(value) => updateUpstream(originalIndex, { proxy: value })} options={proxyOptions} />
-                  <button className="iconOnlyButton" onClick={() => removeUpstream(originalIndex)} disabled={cfg.resolver.upstreams.length <= 1} aria-label="删除上游">
-                    <Trash2 size={15} />
-                  </button>
-                </div>
-              </div>
-            );
-          })}
-        </div>
-        <div className="resolverPolicyBar">
-          <label className="compactField">
-            <span>解析超时</span>
-            <input value={cfg.resolver.timeout} onChange={(event) => updateResolver({ timeout: event.target.value })} placeholder="5s" />
-          </label>
-          <label className="compactField bootstrapDnsField">
-            <span>上游域名 fallback</span>
-            <input value={bootstrapDns} onChange={(event) => updateBootstrapDns(event.target.value)} placeholder="1.1.1.1:53, 8.8.8.8:53" />
-          </label>
-          <div className="resolverSwitchGroup">
-            <SwitchField checked={cfg.resolver.ipv6Enabled} onChange={(checked) => updateResolver({ ipv6Enabled: checked })}>启用 IPv6 AAAA 解析</SwitchField>
+                )
+              },
+              {
+                title: "主机",
+                width: 180,
+                render: (_value, record) => (
+                  <Input value={record.item.host} onChange={(event) => updateEndpoint(record.originalIndex, { host: event.target.value })} placeholder="1.1.1.1" />
+                )
+              },
+              {
+                title: "端口",
+                width: 100,
+                render: (_value, record) => (
+                  <Input value={record.item.port} onChange={(event) => updateEndpoint(record.originalIndex, { port: event.target.value })} placeholder={defaultPortForProtocol(record.item.protocol)} />
+                )
+              },
+              {
+                title: "路径",
+                width: 150,
+                render: (_value, record) => {
+                  const isDoh = record.item.protocol === "http" || record.item.protocol === "https";
+                  return (
+                    <Input
+                      value={isDoh ? record.item.path : ""}
+                      onChange={(event) => updateEndpoint(record.originalIndex, { path: event.target.value })}
+                      placeholder={isDoh ? "/dns-query" : "-"}
+                      disabled={!isDoh}
+                    />
+                  );
+                }
+              },
+              {
+                title: "SNI",
+                width: 180,
+                render: (_value, record) => {
+                  const isDoh = record.item.protocol === "http" || record.item.protocol === "https";
+                  const serverNameEnabled = record.item.protocol === "dot" || isDoh;
+                  return (
+                    <Input
+                      value={serverNameEnabled ? record.item.serverName : ""}
+                      onChange={(event) => updateUpstream(record.originalIndex, { serverName: event.target.value })}
+                      placeholder={serverNameEnabled ? "cloudflare-dns.com" : "-"}
+                      disabled={!serverNameEnabled}
+                    />
+                  );
+                }
+              },
+              {
+                title: "代理",
+                width: 140,
+                render: (_value, record) => (
+                  <Select className="workbenchInlineSelect" value={record.item.proxy} onChange={(value) => updateUpstream(record.originalIndex, { proxy: value })} options={proxyOptions} />
+                )
+              },
+              {
+                title: "",
+                width: 52,
+                align: "right",
+                render: (_value, record) => (
+                  <Button icon={<DeleteOutlined />} onClick={() => removeUpstream(record.originalIndex)} disabled={cfg.resolver.upstreams.length <= 1} aria-label="删除上游" />
+                )
+              }
+            ]}
+          />
           </div>
         </div>
-      </section>
 
-      <section className="panel configPanel">
-        <header>
-          <div>
-            <h2>代理</h2>
-            <p>默认代理只作用于未单独指定代理的上游。</p>
+        <div className="workbenchPanel">
+          <div className="workbenchPanelHeader">
+            <span className="workbenchPanelTitle">代理</span>
+            <Typography.Text type="secondary">默认代理只作用于未单独指定代理的上游。</Typography.Text>
           </div>
-          <button className="iconTextButton" onClick={addProxy}><Plus size={15} /> 新增代理</button>
-        </header>
-        <div className="proxyToolbar">
-          <label className="compactField">
-            <span>默认代理</span>
-            <SelectField
-              value={cfg.resolver.defaultProxy}
-              onChange={(value) => updateResolver({ defaultProxy: value })}
-              options={[{ value: "", label: "无" }, ...cfg.resolver.proxies.map((proxy) => ({ value: proxy.name, label: proxy.name }))]}
-            />
-          </label>
-        </div>
-        <div className="dataTable">
-          <div className="tableHeader proxyTable">
-            <span>名称</span>
-            <span>协议</span>
-            <span>主机</span>
-            <span>端口</span>
-            <span>用户名</span>
-            <span>密码</span>
-            <span />
+          <div className="workbenchPanelBodyFlush">
+          <Table
+            rowKey="key"
+            size="small"
+            pagination={false}
+            scroll={{ x: "max-content" }}
+            dataSource={proxyRows}
+            locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="还没有代理配置，上游会直接连接" /> }}
+            columns={[
+              {
+                title: "名称",
+                width: 150,
+                render: (_value, record) => (
+                  <Input value={record.item.name} onChange={(event) => updateProxy(record.index, { name: event.target.value })} placeholder="名称" />
+                )
+              },
+              {
+                title: "协议",
+                width: 130,
+                render: (_value, record) => (
+                  <Select
+                    className="workbenchInlineSelect"
+                    value={record.item.protocol}
+                    onChange={(value) => updateProxyEndpoint(record.index, { protocol: value, port: record.item.port || defaultPortForProxy(value) })}
+                    options={proxyProtocolOptions}
+                  />
+                )
+              },
+              {
+                title: "主机",
+                width: 180,
+                render: (_value, record) => (
+                  <Input value={record.item.host} onChange={(event) => updateProxyEndpoint(record.index, { host: event.target.value })} placeholder="127.0.0.1" />
+                )
+              },
+              {
+                title: "端口",
+                width: 100,
+                render: (_value, record) => (
+                  <Input value={record.item.port} onChange={(event) => updateProxyEndpoint(record.index, { port: event.target.value })} placeholder={defaultPortForProxy(record.item.protocol)} />
+                )
+              },
+              {
+                title: "用户名",
+                width: 140,
+                render: (_value, record) => (
+                  <Input value={record.item.username} onChange={(event) => updateProxy(record.index, { username: event.target.value })} placeholder="可选" />
+                )
+              },
+              {
+                title: "密码",
+                width: 140,
+                render: (_value, record) => (
+                  <Input.Password value={record.item.password} onChange={(event) => updateProxy(record.index, { password: event.target.value })} placeholder="可选" />
+                )
+              },
+              {
+                title: "",
+                width: 52,
+                align: "right",
+                render: (_value, record) => (
+                  <Button icon={<DeleteOutlined />} onClick={() => removeProxy(record.index)} aria-label="删除代理" />
+                )
+              }
+            ]}
+          />
           </div>
-          {cfg.resolver.proxies.map((item, index) => {
-            return (
-              <div className="tableRow proxyTable" key={`proxy-${index}`}>
-                <input value={item.name} onChange={(event) => updateProxy(index, { name: event.target.value })} placeholder="名称" />
-                <SelectField
-                  value={item.protocol}
-                  onChange={(value) => updateProxyEndpoint(index, { protocol: value, port: item.port || defaultPortForProxy(value) })}
-                  options={proxyProtocolOptions}
-                />
-                <input value={item.host} onChange={(event) => updateProxyEndpoint(index, { host: event.target.value })} placeholder="127.0.0.1" />
-                <input value={item.port} onChange={(event) => updateProxyEndpoint(index, { port: event.target.value })} placeholder={defaultPortForProxy(item.protocol)} />
-                <input value={item.username} onChange={(event) => updateProxy(index, { username: event.target.value })} placeholder="可选" />
-                <input type="password" value={item.password} onChange={(event) => updateProxy(index, { password: event.target.value })} placeholder="可选" />
-                <button className="iconOnlyButton" onClick={() => removeProxy(index)} aria-label="删除代理">
-                  <Trash2 size={15} />
-                </button>
-              </div>
-            );
-          })}
-          {cfg.resolver.proxies.length === 0 ? <p className="emptyState">还没有代理配置，上游会直接连接。</p> : null}
         </div>
-      </section>
+      </main>
     </section>
   );
 }
@@ -337,13 +431,8 @@ function splitBootstrapDns(value: string): string[] {
 
 function LoadingPanel() {
   return (
-    <section className="panel configPanel">
-      <header>
-        <div>
-          <h2>上游</h2>
-          <p>正在加载本地配置。</p>
-        </div>
-      </header>
-    </section>
+    <Card title="上游">
+      <Typography.Text type="secondary">正在加载本地配置。</Typography.Text>
+    </Card>
   );
 }

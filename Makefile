@@ -26,7 +26,7 @@ install:
 	$(NPM) --prefix $(FRONTEND_DIR) install
 
 dev:
-	cd $(TAURI_DIR) && $(CARGO) tauri dev
+	cd $(TAURI_DIR) && $(CARGO) tauri dev --config tauri.dev.conf.json
 
 build: build-tauri
 

@@ -1,6 +1,20 @@
-import * as Tabs from "@radix-ui/react-tabs";
 import { listen } from "@tauri-apps/api/event";
-import { Play, Power, RefreshCw, RotateCcw, RotateCw, Save, ShieldCheck, Square } from "lucide-react";
+import {
+  ApiOutlined,
+  CheckCircleOutlined,
+  DashboardOutlined,
+  DatabaseOutlined,
+  HistoryOutlined,
+  PlayCircleOutlined,
+  PoweroffOutlined,
+  ReloadOutlined,
+  RollbackOutlined,
+  SaveOutlined,
+  SearchOutlined,
+  SettingOutlined,
+  StopOutlined
+} from "@ant-design/icons";
+import { Alert, App as AntdApp, Button, ConfigProvider, Layout, Modal, Space, Tabs, Tag, Typography, theme as antdTheme } from "antd";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import {
@@ -34,6 +48,12 @@ import { SystemDnsPage } from "../pages/SystemDnsPage";
 import { UpstreamsPage } from "../pages/UpstreamsPage";
 import { applyThemePreference, loadThemePreference, normalizeTheme, themeOptions, type ThemePreference } from "./theme";
 
+type NavigationItem = {
+  key: string;
+  label: string;
+  icon: React.ReactNode;
+};
+
 const defaultPreferences: DesktopPreferences = {
   closeBehavior: "ask",
   startAtLogin: false,
@@ -41,6 +61,28 @@ const defaultPreferences: DesktopPreferences = {
   traySupported: false,
   trayMessage: ""
 };
+
+const { Header, Content, Footer } = Layout;
+
+const navigationItems: NavigationItem[] = [
+  { key: "overview", label: "首页", icon: <DashboardOutlined /> },
+  { key: "rules", label: "规则", icon: <DatabaseOutlined /> },
+  { key: "upstreams", label: "上游", icon: <ApiOutlined /> },
+  { key: "lookup", label: "解析查询", icon: <SearchOutlined /> },
+  { key: "history", label: "历史记录", icon: <HistoryOutlined /> },
+  { key: "system-dns", label: "系统 DNS", icon: <ApiOutlined /> },
+  { key: "settings", label: "设置", icon: <SettingOutlined /> }
+];
+
+const sectionItems = navigationItems.map((item) => ({
+  key: item.key,
+  label: (
+    <span className="moduleTabLabel">
+      {item.icon}
+      <span>{item.label}</span>
+    </span>
+  )
+}));
 
 function applyOptimisticSystemDnsSettings(status: SystemDnsStatus, settings: SystemDnsSettings): SystemDnsStatus {
   const selectedAdapterIds = new Set(settings.selectedAdapterIds);
@@ -204,6 +246,17 @@ export function App() {
   const running = status?.running ?? false;
   const lastStarted = useMemo(() => formatDate(status?.startedAt), [status?.startedAt]);
   const restartRequired = useMemo(() => needsRuntimeRestart(configDoc, savedConfigDoc), [configDoc, savedConfigDoc]);
+  const effectiveDark = theme === "dark";
+  const listenLine = running ? `${status?.listen || "本地监听中"} · ${(status?.mode || "udp").toUpperCase()}` : "服务未运行";
+  const healthyUpstreams = status?.upstreamHealth.filter((item) => item.health === "healthy").length ?? 0;
+  const unhealthyUpstreams = status?.upstreamHealth.filter((item) => item.health === "unhealthy").length ?? 0;
+  const systemDnsState = systemDnsLoading
+    ? "读取中"
+    : systemDns?.settings.enabled
+      ? "允许接管"
+      : systemDns?.supported
+        ? "未接管"
+        : "不可用";
 
   const handleConfigDocChange = useCallback((doc: ConfigDocument) => {
     setConfigDoc(doc);
@@ -393,148 +446,179 @@ export function App() {
     }
   }
 
+  function renderActivePage() {
+    if (activeTab === "rules") {
+      return <RulesPage doc={configDoc} onChange={handleConfigDocChange} />;
+    }
+    if (activeTab === "upstreams") {
+      return <UpstreamsPage doc={configDoc} onChange={handleConfigDocChange} />;
+    }
+    if (activeTab === "lookup") {
+      return <LookupPage running={running} />;
+    }
+    if (activeTab === "history") {
+      return <HistoryPage />;
+    }
+    if (activeTab === "system-dns") {
+      return (
+        <SystemDnsPage
+          systemDns={systemDns}
+          loading={systemDnsLoading}
+          running={running}
+          onSystemDnsSettingsChange={handleSystemDnsSettingsChange}
+          onApplySystemDns={handleApplySystemDns}
+          onRestoreSystemDns={handleRestoreSystemDns}
+        />
+      );
+    }
+    if (activeTab === "settings") {
+      return (
+        <SettingsPage
+          doc={configDoc}
+          onChange={handleConfigDocChange}
+          theme={theme}
+          themeOptions={themeOptions}
+          preferences={preferences}
+          running={running}
+          busy={busy}
+          onClearDnsCache={handleClearDnsCache}
+          onThemeChange={(value) => setTheme(normalizeTheme(value))}
+          onPreferencesChange={handlePreferencesChange}
+        />
+      );
+    }
+    return (
+      <OverviewPage
+        active={activeTab === "overview"}
+        status={status}
+        lastStarted={lastStarted}
+        systemDns={systemDns}
+        systemDnsLoading={systemDnsLoading}
+        onNavigate={setActiveTab}
+        onApplySystemDns={handleApplySystemDns}
+        onRestoreSystemDns={handleRestoreSystemDns}
+      />
+    );
+  }
+
   return (
-    <>
-    <main className="shell">
-      <Tabs.Root className="appTabs" value={activeTab} onValueChange={setActiveTab}>
-        <div className="topDock">
-          <header className="appHeader">
-            <div className="brand">
-              <span className="mark" aria-hidden="true" />
+    <ConfigProvider
+      theme={{
+        algorithm: effectiveDark ? antdTheme.darkAlgorithm : antdTheme.defaultAlgorithm,
+        cssVar: { key: "autodns" }
+      }}
+    >
+      <AntdApp>
+        <Layout className="shell desktopShell">
+          <Header className="desktopToolbar">
+            <div className="desktopBrand">
+              <img src="/appicon.svg" alt="" />
               <div>
-                <h1>autodns</h1>
-                <p>本地 DNS 控制台</p>
+                <Typography.Title level={1}>autodns</Typography.Title>
+                <Typography.Text type="secondary">本地 DNS 控制台</Typography.Text>
               </div>
             </div>
-
-            <div className="toolbarActions">
-              <div className="toolbarGroup">
-                <button className={running ? "danger" : "primary"} onClick={running ? handleStop : handleStart} disabled={busy}>
-                  {running ? <Square size={15} /> : <Play size={15} />}
+            <div className="desktopRuntime">
+              <Tag color={running ? "success" : "default"} className="runtimeTag">
+                {running ? "运行中" : "已停止"}
+              </Tag>
+              <Typography.Text type="secondary" ellipsis title={listenLine}>
+                {listenLine}
+              </Typography.Text>
+            </div>
+            <div className="appHeaderActions">
+              <Space.Compact className="headerActionCluster">
+                <Button
+                  type={running ? "default" : "primary"}
+                  danger={running}
+                  icon={running ? <StopOutlined /> : <PlayCircleOutlined />}
+                  onClick={running ? handleStop : handleStart}
+                  disabled={busy}
+                >
                   {busy ? "处理中" : running ? "停止" : "启动"}
-                </button>
-                <button onClick={handleRestart} disabled={busy || !running}>
-                  <RotateCw size={15} />
+                </Button>
+                <Button icon={<ReloadOutlined />} onClick={handleRestart} disabled={busy || !running}>
                   重启
-                </button>
-              </div>
-              <div className="toolbarGroup">
-                <button onClick={() => refresh(activeTab === "system-dns")} disabled={busy}>
-                  <RefreshCw size={15} />
+                </Button>
+              </Space.Compact>
+              <Space.Compact className="headerActionCluster">
+                <Button icon={<ReloadOutlined />} onClick={() => refresh(activeTab === "system-dns")} disabled={busy}>
                   刷新
-                </button>
-                <button onClick={handleQuitApp} disabled={busy}>
-                  <Power size={15} />
+                </Button>
+                <Button type="primary" icon={<SaveOutlined />} onClick={handleSaveConfig} disabled={busy || !configDoc || !dirty}>
+                  保存
+                </Button>
+                <Button icon={<PoweroffOutlined />} onClick={handleQuitApp} disabled={busy}>
                   退出
-                </button>
-              </div>
+                </Button>
+              </Space.Compact>
             </div>
-          </header>
-
-          <Tabs.List className="mainTabsList" aria-label="主导航">
-            <Tabs.Trigger className="mainTabsTrigger" value="overview">概览</Tabs.Trigger>
-            <Tabs.Trigger className="mainTabsTrigger" value="rules">规则</Tabs.Trigger>
-            <Tabs.Trigger className="mainTabsTrigger" value="upstreams">上游</Tabs.Trigger>
-            <Tabs.Trigger className="mainTabsTrigger" value="lookup">查询</Tabs.Trigger>
-            <Tabs.Trigger className="mainTabsTrigger" value="history">历史</Tabs.Trigger>
-            <Tabs.Trigger className="mainTabsTrigger" value="system-dns">系统 DNS</Tabs.Trigger>
-            <Tabs.Trigger className="mainTabsTrigger" value="settings">设置</Tabs.Trigger>
-          </Tabs.List>
-
-          {dirty ? (
-            <section className="configActionBar">
-              <div>
-                <strong>有未保存修改</strong>
-                <span>
-                  {running
+          </Header>
+          <nav className="moduleNav" aria-label="主导航">
+            <Tabs activeKey={activeTab} onChange={setActiveTab} items={sectionItems} />
+          </nav>
+          <Content className="appContent">
+            {dirty ? (
+              <Alert
+                className="configActionBar"
+                type="warning"
+                showIcon
+                title="有未保存修改"
+                description={
+                  running
                     ? restartRequired
                       ? "监听入口已变更，保存时会自动重启服务。"
                       : "保存后会立即替换运行中的上游、路由、缓存等配置。"
-                    : "服务未启动；保存后会在下次启动时使用新配置。"}
-                </span>
-              </div>
-              <div className="configActionButtons">
-                <button onClick={handleValidateConfig} disabled={busy || !configDoc}>
-                  <ShieldCheck size={15} />
-                  校验
-                </button>
-                <button onClick={handleDiscardConfig} disabled={busy || !dirty}>
-                  <RotateCcw size={15} />
-                  放弃
-                </button>
-                <button onClick={handleSaveConfig} disabled={busy || !configDoc || !dirty}>
-                  <Save size={15} />
-                  保存
-                </button>
-              </div>
+                    : "服务未启动；保存后会在下次启动时使用新配置。"
+                }
+                action={(
+                  <Space>
+                    <Button icon={<CheckCircleOutlined />} onClick={handleValidateConfig} disabled={busy || !configDoc}>
+                      校验
+                    </Button>
+                    <Button icon={<RollbackOutlined />} onClick={handleDiscardConfig} disabled={busy || !dirty}>
+                      放弃
+                    </Button>
+                    <Button type="primary" icon={<SaveOutlined />} onClick={handleSaveConfig} disabled={busy || !configDoc || !dirty}>
+                      保存
+                    </Button>
+                  </Space>
+                )}
+              />
+            ) : null}
+
+            <section className="workspace">
+              {renderActivePage()}
             </section>
-          ) : null}
-        </div>
-
-        <section className="workspace">
-          <Tabs.Content className="mainTabsContent" value="overview">
-            <OverviewPage active={activeTab === "overview"} status={status} lastStarted={lastStarted} />
-          </Tabs.Content>
-
-          <Tabs.Content className="mainTabsContent" value="rules">
-            <RulesPage doc={configDoc} onChange={handleConfigDocChange} />
-          </Tabs.Content>
-
-          <Tabs.Content className="mainTabsContent" value="upstreams">
-            <UpstreamsPage doc={configDoc} onChange={handleConfigDocChange} />
-          </Tabs.Content>
-
-          <Tabs.Content className="mainTabsContent" value="lookup">
-            <LookupPage running={running} />
-          </Tabs.Content>
-
-          <Tabs.Content className="mainTabsContent" value="history">
-            <HistoryPage />
-          </Tabs.Content>
-
-          <Tabs.Content className="mainTabsContent" value="system-dns">
-            <SystemDnsPage
-              systemDns={systemDns}
-              loading={systemDnsLoading}
-              running={running}
-              onSystemDnsSettingsChange={handleSystemDnsSettingsChange}
-              onApplySystemDns={handleApplySystemDns}
-              onRestoreSystemDns={handleRestoreSystemDns}
-            />
-          </Tabs.Content>
-
-          <Tabs.Content className="mainTabsContent" value="settings">
-            <SettingsPage
-              doc={configDoc}
-              onChange={handleConfigDocChange}
-              theme={theme}
-              themeOptions={themeOptions}
-              preferences={preferences}
-              running={running}
-              busy={busy}
-              onClearDnsCache={handleClearDnsCache}
-              onThemeChange={(value) => setTheme(normalizeTheme(value))}
-              onPreferencesChange={handlePreferencesChange}
-            />
-          </Tabs.Content>
-        </section>
-      </Tabs.Root>
-    </main>
-    {closePromptOpen ? (
-      <div className="modalLayer" role="presentation">
-        <section className="confirmDialog closeDialog" role="dialog" aria-modal="true" aria-labelledby="close-dialog-title">
-          <header>
-            <h2 id="close-dialog-title">关闭 autodns</h2>
-          </header>
-          <div className="confirmActions closeActions">
-            <button onClick={() => setClosePromptOpen(false)}>取消</button>
-            <button onClick={handleHideToTray}>隐藏窗口</button>
-            <button className="primary" onClick={handleQuitApp}>退出程序</button>
-          </div>
-        </section>
-      </div>
-    ) : null}
-    <NotificationCenter notifications={notifications} onDismiss={dismissNotification} />
-    </>
+          </Content>
+          <Footer className="desktopStatusBar">
+            <Typography.Text type="secondary">系统 DNS：{systemDnsState}</Typography.Text>
+            <Typography.Text type="secondary">缓存：{configDoc?.config.cache.enabled ? "启用" : "关闭"}</Typography.Text>
+            <Typography.Text type="secondary">上游：{healthyUpstreams} 健康 / {unhealthyUpstreams} 异常</Typography.Text>
+            {status?.lastError ? <Typography.Text type="danger">最近错误：{status.lastError}</Typography.Text> : <Typography.Text type="secondary">最近错误：无</Typography.Text>}
+            <Typography.Text type="secondary" className="statusBarEnd">
+              {configDoc?.path || ""}
+            </Typography.Text>
+          </Footer>
+        </Layout>
+        <Modal
+          open={closePromptOpen}
+          title="关闭 autodns"
+          footer={[
+            <Button key="cancel" onClick={() => setClosePromptOpen(false)}>
+              取消
+            </Button>,
+            <Button key="hide" onClick={handleHideToTray}>
+              隐藏窗口
+            </Button>,
+            <Button key="quit" type="primary" danger onClick={handleQuitApp}>
+              退出程序
+            </Button>
+          ]}
+          onCancel={() => setClosePromptOpen(false)}
+        />
+        <NotificationCenter notifications={notifications} onDismiss={dismissNotification} />
+      </AntdApp>
+    </ConfigProvider>
   );
 }

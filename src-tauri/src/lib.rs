@@ -2,6 +2,7 @@ mod commands;
 mod config;
 mod desktop;
 mod dns;
+mod environment;
 mod history;
 mod logging;
 mod preferences;
@@ -161,7 +162,7 @@ fn setup_tray(app: &mut tauri::App) -> tauri::Result<()> {
     let icon = Image::from_bytes(include_bytes!("../icons/tray-icon.png"))?;
     let tray_app = app.handle().clone();
 
-    let tray = TrayIconBuilder::with_id("autodns")
+    let tray = TrayIconBuilder::with_id(environment::tray_id())
         .icon(icon)
         .icon_as_template(cfg!(target_os = "macos"))
         .tooltip("已停止")

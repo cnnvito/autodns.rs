@@ -1,4 +1,4 @@
-use crate::config::desktop_config_dir;
+use crate::{config::desktop_config_dir, environment};
 use crate::desktop::DesktopPreferences;
 #[cfg(not(target_os = "windows"))]
 use anyhow::anyhow;
@@ -94,7 +94,7 @@ fn launch_agent_path() -> Result<PathBuf> {
     Ok(home
         .join("Library")
         .join("LaunchAgents")
-        .join("com.autodns.desktop.plist"))
+        .join(format!("{}.plist", environment::app_identifier())))
 }
 
 #[cfg(target_os = "macos")]
@@ -122,7 +122,7 @@ fn platform_set_start_at_login(enabled: bool) -> Result<()> {
 <plist version="1.0">
 <dict>
   <key>Label</key>
-  <string>com.autodns.desktop</string>
+  <string>{}</string>
   <key>ProgramArguments</key>
   <array>
     <string>{}</string>
@@ -132,6 +132,7 @@ fn platform_set_start_at_login(enabled: bool) -> Result<()> {
 </dict>
 </plist>
 "#,
+        environment::app_identifier(),
         xml_escape(&exec_path.to_string_lossy())
     );
     fs::write(path, data).context("write launch agent")
@@ -153,7 +154,9 @@ fn linux_autostart_path() -> Result<PathBuf> {
         .map(PathBuf::from)
         .or_else(|| dirs::home_dir().map(|home| home.join(".config")))
         .ok_or_else(|| anyhow!("user config dir is not available"))?;
-    Ok(dir.join("autostart").join("autodns.desktop"))
+    Ok(dir
+        .join("autostart")
+        .join(format!("{}.desktop", environment::autostart_entry_name())))
 }
 
 #[cfg(target_os = "linux")]
@@ -176,7 +179,8 @@ fn platform_set_start_at_login(enabled: bool) -> Result<()> {
         fs::create_dir_all(parent).context("create autostart directory")?;
     }
     let data = format!(
-        "[Desktop Entry]\nType=Application\nName=autodns\nExec={}\nTerminal=false\nX-GNOME-Autostart-enabled=true\n",
+        "[Desktop Entry]\nType=Application\nName={}\nExec={}\nTerminal=false\nX-GNOME-Autostart-enabled=true\n",
+        environment::product_name(),
         desktop_escape(&exec_path.to_string_lossy())
     );
     fs::write(path, data).context("write autostart entry")
@@ -203,7 +207,9 @@ fn platform_start_at_login_enabled() -> Result<bool> {
             KEY_QUERY_VALUE,
         )
         .context("open startup registry key")?;
-    let value: String = key.get_value("autodns").unwrap_or_default();
+    let value: String = key
+        .get_value(environment::autostart_entry_name())
+        .unwrap_or_default();
     Ok(!value.is_empty())
 }
 
@@ -219,15 +225,18 @@ fn platform_set_start_at_login(enabled: bool) -> Result<()> {
         )
         .context("open startup registry key")?;
     if !enabled {
-        match key.delete_value("autodns") {
+        match key.delete_value(environment::autostart_entry_name()) {
             Ok(_) => return Ok(()),
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
             Err(err) => return Err(err).context("delete startup registry value"),
         }
     }
     let exec_path = std::env::current_exe().context("resolve executable")?;
-    key.set_value("autodns", &format!("\"{}\"", exec_path.to_string_lossy()))
-        .context("write startup registry value")
+    key.set_value(
+        environment::autostart_entry_name(),
+        &format!("\"{}\"", exec_path.to_string_lossy()),
+    )
+    .context("write startup registry value")
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]

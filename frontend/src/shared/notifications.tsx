@@ -1,5 +1,5 @@
-import * as Toast from "@radix-ui/react-toast";
-import { AlertTriangle, CheckCircle2, Info, X, XCircle } from "lucide-react";
+import { CloseOutlined } from "@ant-design/icons";
+import { Alert, Button } from "antd";
 
 export type NotificationKind = "success" | "error" | "warning" | "info";
 
@@ -18,44 +18,26 @@ export function NotificationCenter({
   onDismiss: (id: number) => void;
 }) {
   return (
-    <Toast.Provider swipeDirection="right" duration={3800}>
+    <div className="notificationViewport" role="region" aria-label="通知">
       {notifications.map((item) => (
-        <Toast.Root
-          className={`notificationToast ${item.kind}`}
-          defaultOpen
+        <Alert
           key={item.id}
-          onOpenChange={(open) => {
-            if (!open) {
-              onDismiss(item.id);
-            }
-          }}
-        >
-          <div className="notificationIcon" aria-hidden="true">
-            <NotificationIcon kind={item.kind} />
-          </div>
-          <div className="notificationBody">
-            <Toast.Title className="notificationTitle">{item.title}</Toast.Title>
-            {item.description ? <Toast.Description className="notificationDescription">{item.description}</Toast.Description> : null}
-          </div>
-          <Toast.Close className="notificationClose" aria-label="关闭通知">
-            <X size={14} />
-          </Toast.Close>
-        </Toast.Root>
+          type={item.kind}
+          title={item.title}
+          description={item.description}
+          showIcon
+          action={
+            <Button
+              type="text"
+              size="small"
+              icon={<CloseOutlined />}
+              aria-label="关闭通知"
+              onClick={() => onDismiss(item.id)}
+            />
+          }
+          role={item.kind === "error" ? "alert" : "status"}
+        />
       ))}
-      <Toast.Viewport className="notificationViewport" />
-    </Toast.Provider>
+    </div>
   );
-}
-
-function NotificationIcon({ kind }: { kind: NotificationKind }) {
-  if (kind === "success") {
-    return <CheckCircle2 size={18} />;
-  }
-  if (kind === "error") {
-    return <XCircle size={18} />;
-  }
-  if (kind === "warning") {
-    return <AlertTriangle size={18} />;
-  }
-  return <Info size={18} />;
 }

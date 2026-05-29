@@ -1,4 +1,7 @@
-import type { SelectOption } from "../../shared/ui";
+type SelectOption = {
+  value: string;
+  label: string;
+};
 
 export const serverModeOptions: SelectOption[] = [
   { value: "udp", label: "UDP" },
