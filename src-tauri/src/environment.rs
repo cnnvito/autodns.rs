@@ -57,6 +57,7 @@ pub fn default_listen_addr() -> &'static str {
     }
 }
 
+#[cfg(any(target_os = "linux", target_os = "windows", test))]
 pub fn autostart_entry_name() -> &'static str {
     match current() {
         AppEnvironment::Development => "autodns-dev",
