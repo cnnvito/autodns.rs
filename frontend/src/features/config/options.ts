@@ -3,6 +3,8 @@ type SelectOption = {
   label: string;
 };
 
+type Translate = (key: string) => string;
+
 export const serverModeOptions: SelectOption[] = [
   { value: "udp", label: "UDP" },
   { value: "tcp", label: "TCP" },
@@ -23,15 +25,19 @@ export const proxyProtocolOptions: SelectOption[] = [
   { value: "socks5", label: "SOCKS5" }
 ];
 
-export const matchOptions: SelectOption[] = [
-  { value: "exact", label: "精确匹配" },
-  { value: "suffix", label: "后缀匹配" },
-  { value: "wildcard", label: "通配匹配" }
-];
+export function getMatchOptions(t: Translate): SelectOption[] {
+  return [
+    { value: "exact", label: t("options.match.exact") },
+    { value: "suffix", label: t("options.match.suffix") },
+    { value: "wildcard", label: t("options.match.wildcard") }
+  ];
+}
 
-export const logLevelOptions: SelectOption[] = [
-  { value: "debug", label: "调试" },
-  { value: "info", label: "信息" },
-  { value: "warn", label: "警告" },
-  { value: "error", label: "错误" }
-];
+export function getLogLevelOptions(t: Translate): SelectOption[] {
+  return [
+    { value: "debug", label: t("options.logLevel.debug") },
+    { value: "info", label: t("options.logLevel.info") },
+    { value: "warn", label: t("options.logLevel.warn") },
+    { value: "error", label: t("options.logLevel.error") }
+  ];
+}

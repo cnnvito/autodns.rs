@@ -2,8 +2,9 @@ import { Button, Card, Input, InputNumber, Select, Space, Switch, Tabs, Typograp
 import { open } from "@tauri-apps/plugin-dialog";
 import { FolderOpenOutlined } from "@ant-design/icons";
 import { useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
 
-import { logLevelOptions, serverModeOptions } from "../features/config/options";
+import { getLogLevelOptions, serverModeOptions } from "../features/config/options";
 import type { ConfigPageProps } from "../features/config/doc";
 import type { ConfigValidation } from "../features/config/validation";
 import type { DesktopConfig, DesktopPreferences, SystemDnsSettings, SystemDnsStatus } from "../shared/types";
@@ -18,6 +19,8 @@ export type SettingsSection = "general" | "service" | "system-dns" | "cache" | "
 
 type SettingsPageProps = ConfigPageProps & {
   validation: ConfigValidation;
+  language: string;
+  languageOptions: SelectOption[];
   theme: string;
   themeOptions: SelectOption[];
   preferences: DesktopPreferences;
@@ -27,6 +30,7 @@ type SettingsPageProps = ConfigPageProps & {
   systemDns: SystemDnsStatus | null;
   systemDnsLoading: boolean;
   onClearDnsCache: () => void;
+  onLanguageChange: (value: string) => void;
   onThemeChange: (value: string) => void;
   onPreferencesChange: (patch: Partial<DesktopPreferences>) => void;
   onSectionChange: (section: SettingsSection) => void;
@@ -37,29 +41,12 @@ type SettingsPageProps = ConfigPageProps & {
 
 const numberHealthFields = new Set<keyof DesktopConfig["healthcheck"]>(["failureThreshold", "recoveryThreshold"]);
 
-const closeBehaviorOptions: SelectOption[] = [
-  { value: "ask", label: "每次询问" },
-  { value: "hide", label: "关闭时隐藏窗口" },
-  { value: "quit", label: "关闭时退出程序" }
-];
-
-const startAtLoginOptions: SelectOption[] = [
-  { value: "enabled", label: "启用" },
-  { value: "disabled", label: "禁用" }
-];
-
-const settingsTabItems: Array<{ key: SettingsSection; label: string }> = [
-  { key: "general", label: "通用" },
-  { key: "service", label: "服务" },
-  { key: "system-dns", label: "系统 DNS" },
-  { key: "cache", label: "缓存" },
-  { key: "health", label: "健康检查" }
-];
-
 export function SettingsPage({
   doc,
   onChange,
   validation,
+  language,
+  languageOptions,
   theme,
   themeOptions,
   preferences,
@@ -69,6 +56,7 @@ export function SettingsPage({
   systemDns,
   systemDnsLoading,
   onClearDnsCache,
+  onLanguageChange,
   onThemeChange,
   onPreferencesChange,
   onSectionChange,
@@ -76,10 +64,29 @@ export function SettingsPage({
   onApplySystemDns,
   onRestoreSystemDns
 }: SettingsPageProps) {
+  const { t } = useTranslation();
+  const closeBehaviorOptions: SelectOption[] = [
+    { value: "ask", label: t("settings.closeAsk") },
+    { value: "hide", label: t("settings.closeHide") },
+    { value: "quit", label: t("settings.closeQuit") }
+  ];
+  const startAtLoginOptions: SelectOption[] = [
+    { value: "enabled", label: t("common.enabled") },
+    { value: "disabled", label: t("common.disabled") }
+  ];
+  const settingsTabItems: Array<{ key: SettingsSection; label: string }> = [
+    { key: "general", label: t("settings.tabGeneral") },
+    { key: "service", label: t("settings.tabService") },
+    { key: "system-dns", label: t("settings.tabSystemDns") },
+    { key: "cache", label: t("settings.tabCache") },
+    { key: "health", label: t("settings.tabHealth") }
+  ];
+  const logLevelOptions = getLogLevelOptions(t);
+
   if (!doc) {
     return (
-      <Card title="设置">
-        <Typography.Text type="secondary">正在加载本地配置。</Typography.Text>
+      <Card title={t("settings.title")}>
+        <Typography.Text type="secondary">{t("settings.loading")}</Typography.Text>
       </Card>
     );
   }
@@ -144,10 +151,13 @@ export function SettingsPage({
         <main className="workbenchSettingsContent">
           {section === "general" ? (
             <div className="settingRows">
-              <SettingRow title="主题">
+              <SettingRow title={t("settings.language")}>
+                <Select className="workbenchInlineSelect" value={language} onChange={onLanguageChange} options={languageOptions} />
+              </SettingRow>
+              <SettingRow title={t("settings.theme")}>
                 <Select className="workbenchInlineSelect" value={theme} onChange={onThemeChange} options={themeOptions} />
               </SettingRow>
-              <SettingRow title="关闭窗口">
+              <SettingRow title={t("settings.closeWindow")}>
                 <Select
                   className="workbenchInlineSelect"
                   value={preferences.closeBehavior}
@@ -155,7 +165,7 @@ export function SettingsPage({
                   options={closeBehaviorOptions}
                 />
               </SettingRow>
-              <SettingRow title="开机自启">
+              <SettingRow title={t("settings.startAtLogin")}>
                 <Select
                   className="workbenchInlineSelect"
                   value={preferences.startAtLogin ? "enabled" : "disabled"}
@@ -168,34 +178,34 @@ export function SettingsPage({
 
           {section === "service" ? (
             <div className="settingRows">
-              <SettingRow title="协议模式">
+              <SettingRow title={t("settings.serviceMode")}>
                 <Select className="workbenchInlineSelect" value={cfg.server.mode} onChange={(value) => updateServer({ mode: value })} options={serverModeOptions} />
               </SettingRow>
-              <SettingRow title="监听地址" description="保存后会重启服务。">
+              <SettingRow title={t("settings.listenAddress")} description={t("settings.restartAfterSave")}>
                 <ValidatedInput error={validation.server.listen}>
                   <Input status={validation.server.listen ? "error" : undefined} value={cfg.server.listen} onChange={(event) => updateServer({ listen: event.target.value })} placeholder="127.0.0.1:53" />
                 </ValidatedInput>
               </SettingRow>
-              <SettingRow title="DoH 路径">
+              <SettingRow title={t("settings.dohPath")}>
                 <ValidatedInput error={validation.server.path}>
                   <Input status={validation.server.path ? "error" : undefined} value={cfg.server.path} onChange={(event) => updateServer({ path: event.target.value })} placeholder="/dns-query" disabled={!dohPathEnabled} />
                 </ValidatedInput>
               </SettingRow>
-              <SettingRow title="证书文件">
+              <SettingRow title={t("settings.certFile")}>
                 <Space.Compact style={{ width: "100%" }}>
                   <Input status={validation.server.certFile ? "error" : undefined} value={cfg.server.certFile} onChange={(event) => updateServer({ certFile: event.target.value })} placeholder="/path/to/cert.pem" disabled={!tlsFileEnabled} />
-                  <Button type="primary" icon={<FolderOpenOutlined />} onClick={() => chooseServerFile("certFile", "选择证书文件")} aria-label="选择证书文件" disabled={!tlsFileEnabled} />
+                  <Button type="primary" icon={<FolderOpenOutlined />} onClick={() => chooseServerFile("certFile", t("settings.chooseCertFile"))} aria-label={t("settings.chooseCertFile")} disabled={!tlsFileEnabled} />
                 </Space.Compact>
                 <FieldError message={validation.server.certFile} />
               </SettingRow>
-              <SettingRow title="私钥文件">
+              <SettingRow title={t("settings.keyFile")}>
                 <Space.Compact style={{ width: "100%" }}>
                   <Input status={validation.server.keyFile ? "error" : undefined} value={cfg.server.keyFile} onChange={(event) => updateServer({ keyFile: event.target.value })} placeholder="/path/to/key.pem" disabled={!tlsFileEnabled} />
-                  <Button type="primary" icon={<FolderOpenOutlined />} onClick={() => chooseServerFile("keyFile", "选择私钥文件")} aria-label="选择私钥文件" disabled={!tlsFileEnabled} />
+                  <Button type="primary" icon={<FolderOpenOutlined />} onClick={() => chooseServerFile("keyFile", t("settings.chooseKeyFile"))} aria-label={t("settings.chooseKeyFile")} disabled={!tlsFileEnabled} />
                 </Space.Compact>
                 <FieldError message={validation.server.keyFile} />
               </SettingRow>
-              <SettingRow title="日志级别">
+              <SettingRow title={t("settings.logLevel")}>
                 <Select className="workbenchInlineSelect" value={cfg.log.level} onChange={(value) => updateConfig({ ...cfg, log: { ...cfg.log, level: value } })} options={logLevelOptions} />
               </SettingRow>
             </div>
@@ -215,25 +225,25 @@ export function SettingsPage({
 
           {section === "cache" ? (
             <div className="settingRows">
-              <SettingRow title="缓存开关">
+              <SettingRow title={t("settings.cacheEnabled")}>
                 <Space>
-                  <Switch checkedChildren="启用" unCheckedChildren="关闭" checked={cfg.cache.enabled} onChange={(checked) => updateCache("enabled", checked)} />
-                  <Button onClick={onClearDnsCache} disabled={busy || !running}>立即清理</Button>
+                  <Switch checkedChildren={t("common.enabled")} unCheckedChildren={t("common.disabled")} checked={cfg.cache.enabled} onChange={(checked) => updateCache("enabled", checked)} />
+                  <Button onClick={onClearDnsCache} disabled={busy || !running}>{t("settings.clearNow")}</Button>
                 </Space>
               </SettingRow>
-              <SettingRow title="最大条目">
+              <SettingRow title={t("settings.maxEntries")}>
                 <InlineNumberSetting value={cfg.cache.maxEntries} error={validation.cache.maxEntries} onChange={(value) => updateCache("maxEntries", value)} />
               </SettingRow>
-              <SettingRow title="单条字节">
+              <SettingRow title={t("settings.maxEntrySize")}>
                 <InlineNumberSetting value={cfg.cache.maxEntrySize} error={validation.cache.maxEntrySize} onChange={(value) => updateCache("maxEntrySize", value)} />
               </SettingRow>
-              <SettingRow title="最小 TTL">
+              <SettingRow title={t("settings.minTtl")}>
                 <InlineNumberSetting value={cfg.cache.minTTL} error={validation.cache.minTTL} onChange={(value) => updateCache("minTTL", value)} />
               </SettingRow>
-              <SettingRow title="最大 TTL">
+              <SettingRow title={t("settings.maxTtl")}>
                 <InlineNumberSetting value={cfg.cache.maxTTL} error={validation.cache.maxTTL} onChange={(value) => updateCache("maxTTL", value)} />
               </SettingRow>
-              <SettingRow title="失败 TTL">
+              <SettingRow title={t("settings.negativeTtl")}>
                 <InlineNumberSetting value={cfg.cache.negativeTTL} error={validation.cache.negativeTTL} onChange={(value) => updateCache("negativeTTL", value)} />
               </SettingRow>
             </div>
@@ -241,28 +251,28 @@ export function SettingsPage({
 
           {section === "health" ? (
             <div className="settingRows">
-              <SettingRow title="健康检查">
-                <Switch checkedChildren="启用" unCheckedChildren="关闭" checked={cfg.healthcheck.enabled} onChange={(checked) => updateHealthcheck("enabled", checked)} />
+              <SettingRow title={t("settings.healthcheckEnabled")}>
+                <Switch checkedChildren={t("common.enabled")} unCheckedChildren={t("common.disabled")} checked={cfg.healthcheck.enabled} onChange={(checked) => updateHealthcheck("enabled", checked)} />
               </SettingRow>
-              <SettingRow title="检查间隔">
+              <SettingRow title={t("settings.healthInterval")}>
                 <ValidatedInput error={validation.healthcheck.interval}>
                   <Input status={validation.healthcheck.interval ? "error" : undefined} value={cfg.healthcheck.interval} onChange={(event) => updateHealthcheck("interval", event.target.value)} placeholder="30s" />
                 </ValidatedInput>
               </SettingRow>
-              <SettingRow title="检查超时">
+              <SettingRow title={t("settings.healthTimeout")}>
                 <ValidatedInput error={validation.healthcheck.timeout}>
                   <Input status={validation.healthcheck.timeout ? "error" : undefined} value={cfg.healthcheck.timeout} onChange={(event) => updateHealthcheck("timeout", event.target.value)} placeholder="2s" />
                 </ValidatedInput>
               </SettingRow>
-              <SettingRow title="探测域名">
+              <SettingRow title={t("settings.healthDomain")}>
                 <ValidatedInput error={validation.healthcheck.domain}>
                   <Input status={validation.healthcheck.domain ? "error" : undefined} value={cfg.healthcheck.domain} onChange={(event) => updateHealthcheck("domain", event.target.value)} placeholder="." />
                 </ValidatedInput>
               </SettingRow>
-              <SettingRow title="失败阈值">
+              <SettingRow title={t("settings.failureThreshold")}>
                 <InlineNumberSetting value={cfg.healthcheck.failureThreshold} error={validation.healthcheck.failureThreshold} onChange={(value) => updateHealthcheck("failureThreshold", value)} />
               </SettingRow>
-              <SettingRow title="恢复阈值">
+              <SettingRow title={t("settings.recoveryThreshold")}>
                 <InlineNumberSetting value={cfg.healthcheck.recoveryThreshold} error={validation.healthcheck.recoveryThreshold} onChange={(value) => updateHealthcheck("recoveryThreshold", value)} />
               </SettingRow>
             </div>
@@ -274,6 +284,7 @@ export function SettingsPage({
 }
 
 function InlineNumberSetting({ value, error, onChange }: { value: number; error?: string; onChange: (value: string) => void }) {
+  const { t } = useTranslation();
   const [draft, setDraft] = useState<string | null>(null);
   const displayValue = draft === null ? value : draft;
 
@@ -296,7 +307,7 @@ function InlineNumberSetting({ value, error, onChange }: { value: number; error?
         status={error ? "error" : undefined}
         min={0}
         value={displayValue}
-        placeholder="默认"
+        placeholder={t("settings.defaultPlaceholder")}
         onChange={(next) => {
           if (next === null) {
             setDraft("");

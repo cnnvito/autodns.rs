@@ -141,17 +141,18 @@ pub fn run() {
 }
 
 fn setup_tray(app: &mut tauri::App) -> tauri::Result<()> {
-    let status = MenuItem::with_id(app, "tray-status", "状态：已停止", false, None::<&str>)?;
-    let listen = MenuItem::with_id(app, "tray-listen", "监听：-", false, None::<&str>)?;
-    let show = MenuItem::with_id(app, TRAY_SHOW, "显示窗口", true, None::<&str>)?;
-    let hide = MenuItem::with_id(app, TRAY_HIDE, "隐藏窗口", true, None::<&str>)?;
+    let text = tray_text();
+    let status = MenuItem::with_id(app, "tray-status", format!("{}{}", text.status_prefix, text.stopped), false, None::<&str>)?;
+    let listen = MenuItem::with_id(app, "tray-listen", format!("{}-", text.listen_prefix), false, None::<&str>)?;
+    let show = MenuItem::with_id(app, TRAY_SHOW, text.show, true, None::<&str>)?;
+    let hide = MenuItem::with_id(app, TRAY_HIDE, text.hide, true, None::<&str>)?;
     let toggle_service =
-        MenuItem::with_id(app, TRAY_TOGGLE_SERVICE, "启动服务", true, None::<&str>)?;
+        MenuItem::with_id(app, TRAY_TOGGLE_SERVICE, text.start_service, true, None::<&str>)?;
     let restart_service =
-        MenuItem::with_id(app, TRAY_RESTART_SERVICE, "重启服务", false, None::<&str>)?;
+        MenuItem::with_id(app, TRAY_RESTART_SERVICE, text.restart_service, false, None::<&str>)?;
     let clear_cache =
-        MenuItem::with_id(app, TRAY_CLEAR_CACHE, "清理 DNS 缓存", false, None::<&str>)?;
-    let quit = MenuItem::with_id(app, TRAY_QUIT, "退出", true, None::<&str>)?;
+        MenuItem::with_id(app, TRAY_CLEAR_CACHE, text.clear_cache, false, None::<&str>)?;
+    let quit = MenuItem::with_id(app, TRAY_QUIT, text.quit, true, None::<&str>)?;
     let separator_1 = PredefinedMenuItem::separator(app)?;
     let separator_2 = PredefinedMenuItem::separator(app)?;
     let separator_3 = PredefinedMenuItem::separator(app)?;
@@ -180,7 +181,7 @@ fn setup_tray(app: &mut tauri::App) -> tauri::Result<()> {
     let tray = TrayIconBuilder::with_id(environment::tray_id())
         .icon(icon)
         .icon_as_template(cfg!(target_os = "macos"))
-        .tooltip("已停止")
+        .tooltip(text.stopped)
         .menu(&menu)
         .show_menu_on_left_click(!cfg!(target_os = "windows"))
         .on_tray_icon_event(move |_tray, event| {
@@ -273,23 +274,55 @@ pub(crate) fn refresh_tray_state(app: &tauri::AppHandle) {
     } else {
         service_status.listen.as_str()
     };
+    let text = tray_text();
 
     if service_status.running {
-        let _ = tray_state.status.set_text("状态：运行中");
-        let _ = tray_state.listen.set_text(format!("监听：{listen}"));
-        let _ = tray_state.toggle_service.set_text("停止服务");
+        let _ = tray_state.status.set_text(format!("{}{}", text.status_prefix, text.running));
+        let _ = tray_state.listen.set_text(format!("{}{listen}", text.listen_prefix));
+        let _ = tray_state.toggle_service.set_text(text.stop_service);
         let _ = tray_state.restart_service.set_enabled(true);
         let _ = tray_state.clear_cache.set_enabled(true);
         let _ = tray_state
             .tray
-            .set_tooltip(Some(format!("运行中 · {listen}")));
+            .set_tooltip(Some(format!("{} · {listen}", text.running)));
     } else {
-        let _ = tray_state.status.set_text("状态：已停止");
-        let _ = tray_state.listen.set_text("监听：-");
-        let _ = tray_state.toggle_service.set_text("启动服务");
+        let _ = tray_state.status.set_text(format!("{}{}", text.status_prefix, text.stopped));
+        let _ = tray_state.listen.set_text(format!("{}-", text.listen_prefix));
+        let _ = tray_state.toggle_service.set_text(text.start_service);
         let _ = tray_state.restart_service.set_enabled(false);
         let _ = tray_state.clear_cache.set_enabled(false);
-        let _ = tray_state.tray.set_tooltip(Some("已停止"));
+        let _ = tray_state.tray.set_tooltip(Some(text.stopped.to_string()));
+    }
+}
+
+#[derive(Clone, Copy)]
+struct TrayText {
+    status_prefix: &'static str,
+    listen_prefix: &'static str,
+    running: &'static str,
+    stopped: &'static str,
+    show: &'static str,
+    hide: &'static str,
+    start_service: &'static str,
+    stop_service: &'static str,
+    restart_service: &'static str,
+    clear_cache: &'static str,
+    quit: &'static str,
+}
+
+fn tray_text() -> TrayText {
+    TrayText {
+        status_prefix: "Status: ",
+        listen_prefix: "Listen: ",
+        running: "Running",
+        stopped: "Stopped",
+        show: "Show window",
+        hide: "Hide window",
+        start_service: "Start service",
+        stop_service: "Stop service",
+        restart_service: "Restart service",
+        clear_cache: "Clear DNS cache",
+        quit: "Quit",
     }
 }
 

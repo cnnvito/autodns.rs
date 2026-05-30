@@ -1,4 +1,68 @@
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
+
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalizedMessage {
+    pub code: String,
+    pub message: String,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub values: BTreeMap<String, String>,
+}
+
+impl LocalizedMessage {
+    pub fn new<const N: usize>(
+        code: &str,
+        message: &str,
+        values: [(&str, String); N],
+    ) -> Self {
+        Self {
+            code: code.to_string(),
+            message: message.to_string(),
+            values: values
+                .into_iter()
+                .map(|(key, value)| (key.to_string(), value))
+                .collect(),
+        }
+    }
+
+}
+
+pub fn localized_error_message(error: &str) -> LocalizedMessage {
+    if error == "all upstreams failed" {
+        return LocalizedMessage::new(
+            "runtime.allUpstreamsFailed",
+            "All upstreams failed.",
+            [],
+        );
+    }
+    if error == "selected adapter no longer exists" {
+        return LocalizedMessage::new(
+            "systemDns.error.selectedAdapterMissing",
+            "Selected adapter no longer exists.",
+            [],
+        );
+    }
+    if error == "managed adapter no longer exists" {
+        return LocalizedMessage::new(
+            "systemDns.error.managedAdapterMissing",
+            "Managed adapter no longer exists.",
+            [],
+        );
+    }
+    if error == "network adapters have not been loaded yet; refresh system DNS adapters first" {
+        return LocalizedMessage::new(
+            "systemDns.error.adaptersNotLoaded",
+            "Network adapters have not been loaded yet. Refresh system DNS adapters first.",
+            [],
+        );
+    }
+    LocalizedMessage::new(
+        "runtime.unknown",
+        "{{message}}",
+        [("message", error.to_string())],
+    )
+}
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -162,6 +226,8 @@ pub struct DnsHistoryEntry {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub min_ttl: Option<u32>,
     pub error: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error_message: Option<LocalizedMessage>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -208,6 +274,8 @@ pub struct DesktopStatus {
     pub started_at: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_error_message: Option<LocalizedMessage>,
     pub upstream_health: Vec<UpstreamHealth>,
     pub proxy_health: Vec<ProxyHealth>,
 }
@@ -224,6 +292,7 @@ impl Default for DesktopStatus {
             default_upstreams: 0,
             started_at: None,
             last_error: None,
+            last_error_message: None,
             upstream_health: Vec::new(),
             proxy_health: Vec::new(),
         }
@@ -243,6 +312,8 @@ pub struct UpstreamHealth {
     pub failure_count: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_error_message: Option<LocalizedMessage>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_success_at: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -271,6 +342,8 @@ pub enum HealthState {
 #[serde(rename_all = "camelCase")]
 pub struct DesktopPreferences {
     pub close_behavior: String,
+    #[serde(default)]
+    pub language: String,
     pub start_at_login: bool,
     pub start_at_login_supported: bool,
     pub tray_supported: bool,
@@ -310,8 +383,12 @@ pub struct SystemDnsStatus {
     pub local_servers: Vec<String>,
     pub adapters: Vec<SystemDnsAdapter>,
     pub warnings: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warning_messages: Vec<LocalizedMessage>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_error_message: Option<LocalizedMessage>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -336,4 +413,6 @@ pub struct SystemDnsAdapter {
     pub last_restored_at: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_error_message: Option<LocalizedMessage>,
 }

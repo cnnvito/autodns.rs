@@ -1,5 +1,6 @@
 import { Component, type ReactNode } from "react";
 
+import { i18n } from "../i18n";
 import { errorMessage } from "../shared/format";
 
 export class ErrorBoundary extends Component<{ children: ReactNode }, { error: string }> {
@@ -18,8 +19,8 @@ export class ErrorBoundary extends Component<{ children: ReactNode }, { error: s
       return (
         <main className="shellFallback">
           <section className="bootError">
-            <h1>autodns 渲染失败</h1>
-            <p>桌面外壳已经加载，但 React 页面发生了错误。</p>
+            <h1>{i18n.t("app.renderFailed")}</h1>
+            <p>{i18n.t("app.renderFailedDescription")}</p>
             <pre>{this.state.error}</pre>
           </section>
         </main>

@@ -1,4 +1,7 @@
-use crate::desktop::{SystemDnsAdapter, SystemDnsSettings, SystemDnsStatus};
+use crate::desktop::{
+    localized_error_message, LocalizedMessage, SystemDnsAdapter, SystemDnsSettings,
+    SystemDnsStatus,
+};
 use crate::store::ConfigStore;
 use anyhow::{anyhow, Context, Result};
 #[cfg(any(test, target_os = "windows"))]
@@ -25,6 +28,7 @@ pub fn status_from_adapters(
 
     let selected: HashSet<String> = settings.selected_adapter_ids.iter().cloned().collect();
     let mut warnings = Vec::new();
+    let mut warning_messages = Vec::new();
 
     for adapter in &mut adapters {
         adapter.selected = selected.contains(&adapter.id);
@@ -34,6 +38,10 @@ pub fn status_from_adapters(
         adapter.last_applied_at = saved.last_applied_at;
         adapter.last_restored_at = saved.last_restored_at;
         adapter.last_error = saved.last_error;
+        adapter.last_error_message = adapter
+            .last_error
+            .as_deref()
+            .map(localized_error_message);
     }
 
     let active_count = adapters
@@ -41,23 +49,40 @@ pub fn status_from_adapters(
         .filter(|adapter| adapter.status == "up")
         .count();
     if active_count > 1 {
-        warnings.push(
-            "检测到多个在线网络接口，建议只选择当前出口网络，避免影响 VPN 或虚拟网卡。".to_string(),
-        );
+        warning_messages.push(localized_message(
+            "systemDns.warning.multipleActiveAdapters",
+            "Multiple active network adapters detected. Select only the current egress network to avoid affecting VPNs or virtual adapters.",
+            [],
+        ));
     }
     if adapters.iter().any(|adapter| adapter.virtual_adapter) {
-        warnings.push("列表包含虚拟或隧道接口，默认不会自动接管，请手动选择。".to_string());
+        warning_messages.push(localized_message(
+            "systemDns.warning.virtualAdapters",
+            "The list includes virtual or tunnel adapters. They are not selected automatically.",
+            [],
+        ));
     }
     if settings.enabled && settings.selected_adapter_ids.is_empty() {
-        warnings.push("系统 DNS 接管已开启，但还没有选择任何网络接口。".to_string());
+        warning_messages.push(localized_message(
+            "systemDns.warning.noAdapterSelected",
+            "System DNS takeover is enabled, but no network adapter is selected.",
+            [],
+        ));
     }
     if !listener_targets.can_apply {
-        warnings.push(listener_targets.warning.unwrap_or_else(|| {
-            format!("当前监听地址为 {listen}，系统 DNS 接管需要可用的本机 53 端口监听地址。")
+        warning_messages.push(listener_targets.warning.unwrap_or_else(|| {
+            localized_message(
+                "systemDns.warning.listenerUnavailable",
+                "Current listen address cannot be used for system DNS takeover.",
+                [("listen", listen.to_string())],
+            )
         }));
     }
+    warnings.extend(warning_messages.iter().map(localized_message_fallback));
 
     let supported = platform_supported();
+
+    let last_error_message = last_error.as_deref().map(localized_error_message);
 
     Ok(SystemDnsStatus {
         platform: std::env::consts::OS.to_string(),
@@ -67,7 +92,9 @@ pub fn status_from_adapters(
         local_servers,
         adapters,
         warnings,
+        warning_messages,
         last_error,
+        last_error_message,
     })
 }
 
@@ -115,6 +142,7 @@ pub fn apply(store: &ConfigStore, adapters: &mut [SystemDnsAdapter]) -> Result<(
         adapter.dns_servers = settings.target_servers.clone();
         adapter.managed = true;
         adapter.last_error = None;
+        adapter.last_error_message = None;
     }
     Ok(())
 }
@@ -152,6 +180,7 @@ pub fn restore(store: &ConfigStore, adapters: &mut [SystemDnsAdapter]) -> Result
         adapter.original_dns = None;
         adapter.managed = false;
         adapter.last_error = None;
+        adapter.last_error_message = None;
     }
     Ok(())
 }
@@ -160,7 +189,7 @@ pub fn restore(store: &ConfigStore, adapters: &mut [SystemDnsAdapter]) -> Result
 struct ListenerDnsTargets {
     servers: Vec<String>,
     can_apply: bool,
-    warning: Option<String>,
+    warning: Option<LocalizedMessage>,
 }
 
 fn listener_dns_targets(listen: &str) -> ListenerDnsTargets {
@@ -168,8 +197,10 @@ fn listener_dns_targets(listen: &str) -> ListenerDnsTargets {
         return ListenerDnsTargets {
             servers: Vec::new(),
             can_apply: false,
-            warning: Some(format!(
-                "当前监听地址 {listen} 不是完整的 IP:端口 格式，无法用于系统 DNS 接管。"
+            warning: Some(localized_message(
+                "systemDns.warning.invalidListenAddress",
+                "Listen address is not a complete IP:port value and cannot be used for system DNS takeover.",
+                [("listen", listen.to_string())],
             )),
         };
     };
@@ -177,8 +208,10 @@ fn listener_dns_targets(listen: &str) -> ListenerDnsTargets {
         return ListenerDnsTargets {
             servers: vec![dns_server_ip_for_listener(addr.ip())],
             can_apply: false,
-            warning: Some(format!(
-                "当前监听地址为 {listen}，系统 DNS 只能配置服务器 IP，无法指定端口。要接管系统 DNS，请将监听端口改为 53。"
+            warning: Some(localized_message(
+                "systemDns.warning.listenPortNot53",
+                "System DNS can only set a DNS server IP. Change the listen port to 53 before taking over system DNS.",
+                [("listen", listen.to_string())],
             )),
         };
     }
@@ -188,6 +221,29 @@ fn listener_dns_targets(listen: &str) -> ListenerDnsTargets {
         can_apply: true,
         warning: None,
     }
+}
+
+fn localized_message<const N: usize>(
+    code: &str,
+    message: &str,
+    values: [(&str, String); N],
+) -> LocalizedMessage {
+    LocalizedMessage {
+        code: code.to_string(),
+        message: message.to_string(),
+        values: values
+            .into_iter()
+            .map(|(key, value)| (key.to_string(), value))
+            .collect(),
+    }
+}
+
+fn localized_message_fallback(message: &LocalizedMessage) -> String {
+    let mut fallback = message.message.clone();
+    for (key, value) in &message.values {
+        fallback = fallback.replace(&format!("{{{key}}}"), value);
+    }
+    fallback
 }
 
 fn target_servers_match_listener(listen: &str, servers: &[String]) -> bool {
@@ -343,12 +399,17 @@ mod tests {
         let non_standard = listener_dns_targets("127.0.0.1:15453");
         assert_eq!(non_standard.servers, vec!["127.0.0.1"]);
         assert!(!non_standard.can_apply);
-        assert!(non_standard.warning.unwrap().contains("53"));
+        let warning = non_standard.warning.unwrap();
+        assert_eq!(warning.code, "systemDns.warning.listenPortNot53");
+        assert_eq!(warning.values.get("listen"), Some(&"127.0.0.1:15453".to_string()));
 
         let invalid = listener_dns_targets("127.0.0.1");
         assert!(invalid.servers.is_empty());
         assert!(!invalid.can_apply);
-        assert!(invalid.warning.unwrap().contains("IP:端口"));
+        assert_eq!(
+            invalid.warning.unwrap().code,
+            "systemDns.warning.invalidListenAddress"
+        );
     }
 
     #[test]
@@ -486,6 +547,7 @@ Get-DnsClientServerAddress |
                     last_applied_at: None,
                     last_restored_at: None,
                     last_error: None,
+                    last_error_message: None,
                 }
             })
             .collect())
@@ -518,14 +580,14 @@ Set-DnsClientServerAddress -InterfaceIndex {interface_index} -ServerAddresses $s
         use super::*;
 
         #[test]
-        fn parses_single_adapter_with_chinese_alias() {
-            let json = r#"{"InterfaceIndex":12,"InterfaceAlias":"以太网","InterfaceGuid":"{ABC}","AddressFamily":2,"ServerAddresses":["223.5.5.5","119.29.29.29"]}"#;
+        fn parses_single_adapter_with_alias() {
+            let json = r#"{"InterfaceIndex":12,"InterfaceAlias":"Ethernet","InterfaceGuid":"{ABC}","AddressFamily":2,"ServerAddresses":["223.5.5.5","119.29.29.29"]}"#;
 
             let adapters = parse_adapter_json(json).expect("parse adapter");
 
             assert_eq!(adapters.len(), 1);
             assert_eq!(adapters[0].id, "{ABC}");
-            assert_eq!(adapters[0].name, "以太网");
+            assert_eq!(adapters[0].name, "Ethernet");
             assert_eq!(adapters[0].dns_servers, vec!["223.5.5.5", "119.29.29.29"]);
             assert_eq!(adapters[0].interface_index, Some(12));
         }
@@ -591,6 +653,7 @@ mod macos {
                 last_applied_at: None,
                 last_restored_at: None,
                 last_error: None,
+                last_error_message: None,
             });
         }
         Ok(adapters)

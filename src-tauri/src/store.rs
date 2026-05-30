@@ -3,8 +3,8 @@ use crate::config::{
     validate_desktop_config, CoreConfig,
 };
 use crate::desktop::{
-    ConfigDocument, DesktopConfig, DesktopHostStatus, DesktopRouteStatus, DnsHistoryEntry,
-    DnsHistoryList, DnsHistoryOverview, DnsHistoryTopDomain, SystemDnsSettings,
+    localized_error_message, ConfigDocument, DesktopConfig, DesktopHostStatus, DesktopRouteStatus,
+    DnsHistoryEntry, DnsHistoryList, DnsHistoryOverview, DnsHistoryTopDomain, SystemDnsSettings,
 };
 use crate::history::DnsHistoryEvent;
 use anyhow::{anyhow, Context, Result};
@@ -1200,6 +1200,8 @@ fn list_dns_history(
             usize_to_i64(offset)?
         ],
         |row| {
+            let error: String = row.get(12)?;
+            let error_message = (!error.is_empty()).then(|| localized_error_message(&error));
             Ok(DnsHistoryEntry {
                 id: row.get(0)?,
                 started_at: row.get(1)?,
@@ -1213,7 +1215,8 @@ fn list_dns_history(
                 attempt_count: i64_to_usize(row.get(9)?)?,
                 response_code: row.get(10)?,
                 min_ttl: row.get::<_, Option<i64>>(11)?.map(i64_to_u32).transpose()?,
-                error: row.get(12)?,
+                error,
+                error_message,
             })
         },
     )?;
@@ -1347,6 +1350,8 @@ fn dns_history_overview(conn: &mut Connection) -> Result<DnsHistoryOverview> {
         "#,
     )?;
     let error_rows = error_stmt.query_map(params![&window_started_at], |row| {
+        let error: String = row.get(12)?;
+        let error_message = (!error.is_empty()).then(|| localized_error_message(&error));
         Ok(DnsHistoryEntry {
             id: row.get(0)?,
             started_at: row.get(1)?,
@@ -1360,7 +1365,8 @@ fn dns_history_overview(conn: &mut Connection) -> Result<DnsHistoryOverview> {
             attempt_count: i64_to_usize(row.get(9)?)?,
             response_code: row.get(10)?,
             min_ttl: row.get::<_, Option<i64>>(11)?.map(i64_to_u32).transpose()?,
-            error: row.get(12)?,
+            error,
+            error_message,
         })
     })?;
 

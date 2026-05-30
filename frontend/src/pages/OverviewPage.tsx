@@ -1,11 +1,13 @@
 import { Alert, Badge, Button, Descriptions, Empty, List, Space, Tag, Typography } from "antd";
 import { ReloadOutlined } from "@ant-design/icons";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 
 import { dnsHistoryOverview } from "../shared/api";
-import { errorMessage, formatDate, healthStateLabel } from "../shared/format";
+import { errorMessage, formatDate, localizedMessageText, translatedHealthStateLabel } from "../shared/format";
 import { LoadingOverlay } from "../shared/LoadingOverlay";
 import type { DesktopStatus, DnsHistoryEntry, DnsHistoryOverview, SystemDnsStatus, UpstreamHealth } from "../shared/types";
+import type { ResolvedLanguage } from "../i18n/language";
 
 const numberFormatter = new Intl.NumberFormat();
 
@@ -17,7 +19,8 @@ export function OverviewPage({
   systemDnsLoading,
   onNavigate,
   onApplySystemDns,
-  onRestoreSystemDns
+  onRestoreSystemDns,
+  language
 }: {
   active: boolean;
   status: DesktopStatus | null;
@@ -27,7 +30,9 @@ export function OverviewPage({
   onNavigate: (page: string) => void;
   onApplySystemDns: () => void;
   onRestoreSystemDns: () => void;
+  language: ResolvedLanguage;
 }) {
+  const { t } = useTranslation();
   const running = status?.running ?? false;
   const upstreams = status?.upstreamHealth ?? [];
   const healthyUpstreams = upstreams.filter((item) => item.health === "healthy").length;
@@ -49,11 +54,11 @@ export function OverviewPage({
     try {
       setOverview(await dnsHistoryOverview());
     } catch (err) {
-      setError(errorMessage(err));
+      setError(errorMessage(err, (key, values) => t(key, values)));
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [t]);
 
   useEffect(() => {
     if (!active) {
@@ -75,7 +80,7 @@ export function OverviewPage({
     };
   }, [active, refreshOverview]);
 
-  const updatedAt = useMemo(() => formatDate(overview?.generatedAt), [overview?.generatedAt]);
+  const updatedAt = useMemo(() => formatDate(overview?.generatedAt, language), [overview?.generatedAt, language]);
   const cacheRate = overview?.total ? `${Math.round((overview.cacheHits / overview.total) * 100)}%` : "-";
   const recentQueries = useMemo(() => {
     const rows: DnsHistoryEntry[] = [];
@@ -103,14 +108,14 @@ export function OverviewPage({
     <div className="pageFill desktopHome">
       <header className="desktopHomeHeader">
         <div>
-          <Typography.Title level={2}>服务状态</Typography.Title>
+          <Typography.Title level={2}>{t("overview.serviceStatus")}</Typography.Title>
         </div>
         <Button icon={<ReloadOutlined />} onClick={refreshOverview} disabled={loading}>
-          {loading ? "刷新中" : "刷新"}
+          {loading ? t("overview.refreshing") : t("overview.refresh")}
         </Button>
       </header>
 
-      {error ? <Alert type="error" showIcon title="概览统计暂不可用" description={error} /> : null}
+      {error ? <Alert type="error" showIcon title={t("overview.unavailable")} description={error} /> : null}
 
       <div className="desktopHomeContent loadingOverlayHost" aria-busy={initialOverviewLoading}>
         <div className="homeSplitGrid">
@@ -122,10 +127,10 @@ export function OverviewPage({
               size="small"
               column={1}
               items={[
-                { key: "listen", label: "监听地址", children: running ? status?.listen || "本地监听中" : "未启动" },
-                { key: "mode", label: "协议", children: running ? (status?.mode || "udp").toUpperCase() : "-" },
-                { key: "started", label: "启动时间", children: lastStarted || "-" },
-                { key: "routes", label: "分流 / 代理", children: `${status?.routes ?? 0} 条 / ${status?.proxyHealth?.length ?? 0} 个` }
+                { key: "listen", label: t("overview.listenAddress"), children: running ? status?.listen || t("overview.localListening") : t("overview.notStarted") },
+                { key: "mode", label: t("overview.protocol"), children: running ? (status?.mode || "udp").toUpperCase() : "-" },
+                { key: "started", label: t("overview.startedAt"), children: lastStarted || "-" },
+                { key: "routes", label: t("overview.routesAndProxies"), children: t("overview.routesAndProxiesValue", { routes: status?.routes ?? 0, proxies: status?.proxyHealth?.length ?? 0 }) }
               ]}
             />
           </section>
@@ -133,29 +138,29 @@ export function OverviewPage({
           <section className="homePane homePaneSide">
             <header className="homePaneHeader">
               <Space>
-                <Typography.Title level={3}>系统 DNS</Typography.Title>
+                <Typography.Title level={3}>{t("overview.systemDns")}</Typography.Title>
                 <Tag color={systemDnsLoading ? "warning" : systemDnsEnabled ? "success" : "default"}>
-                  {systemDnsLoading ? "读取中" : systemDnsEnabled ? "允许接管" : "未接管"}
+                  {systemDnsLoading ? t("overview.loading") : systemDnsEnabled ? t("overview.takeoverAllowed") : t("overview.unmanaged")}
                 </Tag>
               </Space>
-              <Button type="link" onClick={() => onNavigate("system-dns")}>详情</Button>
+              <Button type="link" onClick={() => onNavigate("system-dns")}>{t("overview.details")}</Button>
             </header>
             <Descriptions
               size="small"
               column={1}
               items={[
-                { key: "platform", label: "平台", children: systemDns?.platform || "未知" },
-                { key: "target", label: "目标 DNS", children: targetServers.length ? targetServers.join(", ") : "-" },
-                { key: "selected", label: "已选接口", children: `${selectedAdapters} 个` },
-                { key: "managed", label: "已接管", children: `${managedAdapters} 个` }
+                { key: "platform", label: t("overview.platform"), children: systemDns?.platform || t("common.unknown") },
+                { key: "target", label: t("overview.targetDns"), children: targetServers.length ? targetServers.join(", ") : "-" },
+                { key: "selected", label: t("overview.selectedAdapters"), children: t("overview.countItems", { count: selectedAdapters }) },
+                { key: "managed", label: t("overview.managedAdapters"), children: t("overview.countItems", { count: managedAdapters }) }
               ]}
             />
             <Space className="homePaneActions">
               <Button onClick={onRestoreSystemDns} disabled={systemDnsLoading || !managedAdapters}>
-                恢复
+                {t("overview.restore")}
               </Button>
               <Button type="primary" onClick={onApplySystemDns} disabled={systemDnsLoading || !running || !systemDnsEnabled || !selectedAdapters}>
-                应用接管
+                {t("overview.applyTakeover")}
               </Button>
             </Space>
           </section>
@@ -164,23 +169,23 @@ export function OverviewPage({
         <div className="homeSplitGrid">
           <section className="homePane homePaneMain">
             <header className="homePaneHeader">
-              <Typography.Title level={3}>最近活动</Typography.Title>
-              <Typography.Text type="secondary">{updatedAt ? `更新 ${updatedAt}` : "未更新"}</Typography.Text>
+              <Typography.Title level={3}>{t("overview.recentActivity")}</Typography.Title>
+              <Typography.Text type="secondary">{updatedAt ? t("overview.updatedAt", { time: updatedAt }) : t("overview.notUpdated")}</Typography.Text>
             </header>
             <Space size={12} wrap className="homeSummaryLine">
-              <Tag>最近 24 小时 {formatCount(overview?.total)}</Tag>
-              <Tag>缓存命中 {cacheRate}</Tag>
-              <Tag>平均 {overview ? `${Math.round(overview.averageDurationMs)} ms` : "-"}</Tag>
-              <Tag color={overview?.failures ? "error" : "success"}>失败 {formatCount(overview?.failures)}</Tag>
+              <Tag>{t("overview.last24Hours", { count: formatCount(overview?.total) })}</Tag>
+              <Tag>{t("overview.cacheHit", { rate: cacheRate })}</Tag>
+              <Tag>{t("overview.average", { duration: overview ? `${Math.round(overview.averageDurationMs)} ms` : "-" })}</Tag>
+              <Tag color={overview?.failures ? "error" : "success"}>{t("overview.failures", { count: formatCount(overview?.failures) })}</Tag>
             </Space>
             <List
               dataSource={recentQueries}
-              locale={{ emptyText: overview ? "还没有最近解析记录。" : "暂无概览统计。" }}
+              locale={{ emptyText: overview ? t("overview.noRecentRecords") : t("overview.noOverview") }}
               renderItem={(item) => (
                 <List.Item extra={<Typography.Text>{item.durationMs ? `${item.durationMs} ms` : "-"}</Typography.Text>}>
                   <List.Item.Meta
                     title={item.domain}
-                    description={`${formatDate(item.startedAt) || "-"} · ${item.source === "summary" ? "常访问域名" : item.recordType}`}
+                    description={`${formatDate(item.startedAt, language) || "-"} · ${item.source === "summary" ? t("overview.frequentDomain") : item.recordType}`}
                   />
                 </List.Item>
               )}
@@ -189,8 +194,8 @@ export function OverviewPage({
 
           <section className="homePane homePaneSide">
             <header className="homePaneHeader">
-              <Typography.Title level={3}>上游健康</Typography.Title>
-              <Button type="link" onClick={() => onNavigate("upstreams")}>配置</Button>
+              <Typography.Title level={3}>{t("overview.upstreamHealth")}</Typography.Title>
+              <Button type="link" onClick={() => onNavigate("upstreams")}>{t("overview.configure")}</Button>
             </header>
             {upstreams.length ? (
               <List
@@ -199,26 +204,26 @@ export function OverviewPage({
                 renderItem={(item) => <UpstreamRow item={item} />}
               />
             ) : (
-              <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无上游状态" />
+              <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t("overview.noUpstreamStatus")} />
             )}
-            <Typography.Text type="secondary">{healthyUpstreams} 健康 / {unhealthyUpstreams} 异常</Typography.Text>
+            <Typography.Text type="secondary">{t("overview.healthSummary", { healthy: healthyUpstreams, unhealthy: unhealthyUpstreams })}</Typography.Text>
           </section>
         </div>
 
         <div className="homeSplitGrid">
           <section className="homePane homePaneMain">
             <header className="homePaneHeader">
-              <Typography.Title level={3}>常访问域名</Typography.Title>
+              <Typography.Title level={3}>{t("overview.frequentDomain")}</Typography.Title>
             </header>
             <List
               dataSource={overview?.topDomains ?? []}
-              locale={{ emptyText: overview && overview.topDomains.length === 0 ? "还没有最近解析记录。" : "暂无概览统计。" }}
+              locale={{ emptyText: overview && overview.topDomains.length === 0 ? t("overview.noRecentRecords") : t("overview.noOverview") }}
               renderItem={(item, index) => (
                 <List.Item extra={<Typography.Text strong>{formatCount(item.count)}</Typography.Text>}>
                   <List.Item.Meta
                     avatar={<Tag>{index + 1}</Tag>}
                     title={item.domain}
-                    description={`最近 ${formatDate(item.lastSeenAt) || "-"} · 平均 ${Math.round(item.averageDurationMs)} ms`}
+                    description={t("overview.recentAverage", { time: formatDate(item.lastSeenAt, language) || "-", duration: Math.round(item.averageDurationMs) })}
                   />
                 </List.Item>
               )}
@@ -227,46 +232,53 @@ export function OverviewPage({
 
           <section className="homePane homePaneSide">
             <header className="homePaneHeader">
-              <Typography.Title level={3}>最近异常</Typography.Title>
+              <Typography.Title level={3}>{t("overview.recentErrors")}</Typography.Title>
             </header>
             <List
               dataSource={overview?.recentErrors ?? []}
-              locale={{ emptyText: "最近没有解析异常。" }}
+              locale={{ emptyText: t("overview.noRecentErrors") }}
               renderItem={(item) => (
-                <List.Item extra={<Tag color="error">{item.error || item.responseCode || "异常"}</Tag>}>
+                <List.Item extra={<Tag color="error">{historyErrorText(item, t) || item.responseCode || t("overview.abnormal")}</Tag>}>
                   <List.Item.Meta
                     title={item.domain}
-                    description={`${formatDate(item.startedAt) || "-"} · ${item.recordType} · ${item.upstreamName || "未到达上游"}`}
+                    description={`${formatDate(item.startedAt, language) || "-"} · ${item.recordType} · ${item.upstreamName || t("overview.upstreamNotReached")}`}
                   />
                 </List.Item>
               )}
             />
           </section>
         </div>
-        {initialOverviewLoading ? <LoadingOverlay text="正在加载概览统计" /> : null}
+        {initialOverviewLoading ? <LoadingOverlay text={t("overview.loadingOverview")} /> : null}
       </div>
     </div>
   );
 }
 
 function StatusTitle({ running }: { running: boolean }) {
+  const { t } = useTranslation();
   return (
     <Space size={12}>
       <Badge status={running ? "success" : "error"} />
-      <span>{running ? "DNS 服务运行中" : "DNS 服务已停止"}</span>
+      <span>{running ? t("overview.serviceRunning") : t("overview.serviceStopped")}</span>
     </Space>
   );
 }
 
 function UpstreamRow({ item }: { item: UpstreamHealth }) {
+  const { t } = useTranslation();
+  const error = item.lastErrorMessage ? localizedMessageText(item.lastErrorMessage, t) : item.lastError;
   return (
-    <List.Item extra={<Tag color={healthColor(item.health)}>{healthStateLabel(item.health)}</Tag>}>
+    <List.Item extra={<Tag color={healthColor(item.health)}>{translatedHealthStateLabel(item.health, t)}</Tag>}>
       <List.Item.Meta
         title={item.name}
-        description={`${item.protocol.toUpperCase()} · ${item.latencyMs !== undefined ? `${item.latencyMs} ms` : "暂无延迟"}`}
+        description={`${item.protocol.toUpperCase()} · ${item.latencyMs !== undefined ? `${item.latencyMs} ms` : t("overview.noLatency")}${error ? ` · ${error}` : ""}`}
       />
     </List.Item>
   );
+}
+
+function historyErrorText(item: DnsHistoryEntry, translate: (key: string, values?: Record<string, unknown>) => string): string {
+  return item.errorMessage ? localizedMessageText(item.errorMessage, translate) : item.error;
 }
 
 function healthColor(health: UpstreamHealth["health"]) {

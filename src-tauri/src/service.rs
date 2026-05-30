@@ -1,7 +1,7 @@
 use crate::desktop::{
-    ApplyConfigAction, ApplyConfigResult, ConfigDocument, DesktopConfig, DesktopStatus,
-    DnsHistoryList, DnsHistoryOverview, DnsHistoryTopDomain, DnsLookupResult, SystemDnsAdapter,
-    SystemDnsSettings, SystemDnsStatus,
+    localized_error_message, ApplyConfigAction, ApplyConfigResult, ConfigDocument, DesktopConfig,
+    DesktopStatus, DnsHistoryList, DnsHistoryOverview, DnsHistoryTopDomain, DnsLookupResult,
+    SystemDnsAdapter, SystemDnsSettings, SystemDnsStatus,
 };
 use crate::dns::{
     build_proxy_health, build_upstream_health, mark_proxies_unknown, mark_upstreams_unknown,
@@ -98,6 +98,7 @@ impl DesktopService {
             default_upstreams: core.resolver.upstreams.len(),
             started_at: Some(Utc::now().to_rfc3339()),
             last_error: None,
+            last_error_message: None,
             upstream_health: build_upstream_health(&core, Some(&runtime.view().health)),
             proxy_health: build_proxy_health(&core, Some(&runtime.view().health)),
         };
@@ -322,6 +323,7 @@ impl DesktopService {
     pub fn record_error(&self, stage: &str, err: &str) {
         let mut inner = self.inner.lock();
         inner.status.last_error = Some(err.to_string());
+        inner.status.last_error_message = Some(localized_error_message(err));
         self.logs.push("error", format!("{stage}: {err}"));
     }
 
@@ -400,6 +402,7 @@ impl DesktopService {
             default_upstreams: core.resolver.upstreams.len(),
             started_at: self.status().started_at,
             last_error: None,
+            last_error_message: None,
             upstream_health: build_upstream_health(&core, Some(&runtime.view().health)),
             proxy_health: build_proxy_health(&core, Some(&runtime.view().health)),
         };

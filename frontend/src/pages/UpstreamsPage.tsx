@@ -1,6 +1,7 @@
 import { Button, Card, Empty, Input, Select, Space, Switch, Table, Tag, Typography } from "antd";
 import { ArrowDownOutlined, ArrowUpOutlined, DeleteOutlined, PlusOutlined } from "@ant-design/icons";
 import { useState } from "react";
+import { useTranslation } from "react-i18next";
 
 import { proxyProtocolOptions, upstreamProtocolOptions } from "../features/config/options";
 import type { ConfigPageProps } from "../features/config/doc";
@@ -16,6 +17,7 @@ type UpstreamsPageProps = ConfigPageProps & {
 };
 
 export function UpstreamsPage({ doc, onChange, validation }: UpstreamsPageProps) {
+  const { t } = useTranslation();
   const [endpointDrafts, setEndpointDrafts] = useState<Record<number, string>>({});
   const [proxyAddressDrafts, setProxyAddressDrafts] = useState<Record<number, string>>({});
 
@@ -138,7 +140,7 @@ export function UpstreamsPage({ doc, onChange, validation }: UpstreamsPageProps)
     });
   }
 
-  const proxyOptions = [{ value: "", label: "直连" }, ...cfg.resolver.proxies.map((proxy) => ({ value: proxy.name, label: proxy.name }))];
+  const proxyOptions = [{ value: "", label: t("upstreams.direct") }, ...cfg.resolver.proxies.map((proxy) => ({ value: proxy.name, label: proxy.name }))];
   const upstreamRows = cfg.resolver.upstreams.map((item, index) => ({ key: `upstream-${index}`, index, item }));
   const proxyRows = cfg.resolver.proxies.map((item, index) => ({ key: `proxy-${index}`, item, index }));
 
@@ -146,19 +148,19 @@ export function UpstreamsPage({ doc, onChange, validation }: UpstreamsPageProps)
     <section className="pageWorkbench">
       <div className="workbenchToolbar">
         <div className="workbenchToolbarMain">
-          <span className="workbenchTitle">上游与代理</span>
+          <span className="workbenchTitle">{t("upstreams.title")}</span>
         </div>
       </div>
 
       <main className="workbenchMain">
-        <div className="resolverOptionsBar" aria-label="解析选项">
-          <span className="resolverOptionsTitle">解析选项</span>
+        <div className="resolverOptionsBar" aria-label={t("upstreams.resolverOptions")}>
+          <span className="resolverOptionsTitle">{t("upstreams.resolverOptions")}</span>
           <div className="resolverOptionField resolverOptionFieldNarrow">
-            <span>超时</span>
+            <span>{t("upstreams.timeout")}</span>
             <Input size="small" value={cfg.resolver.timeout} onChange={(event) => updateResolver({ timeout: event.target.value })} placeholder="5s" />
           </div>
           <div className="resolverOptionField resolverOptionFieldWide">
-            <span>Fallback DNS</span>
+            <span>{t("upstreams.bootstrapDns")}</span>
             <Select
               size="small"
               mode="tags"
@@ -171,12 +173,12 @@ export function UpstreamsPage({ doc, onChange, validation }: UpstreamsPageProps)
             />
           </div>
           <div className="resolverOptionField resolverOptionFieldSelect">
-            <span>默认代理</span>
+            <span>{t("upstreams.defaultProxy")}</span>
             <Select
               size="small"
               value={cfg.resolver.defaultProxy}
               onChange={(value) => updateResolver({ defaultProxy: value })}
-              options={[{ value: "", label: "无" }, ...cfg.resolver.proxies.map((proxy) => ({ value: proxy.name, label: proxy.name }))]}
+              options={[{ value: "", label: t("upstreams.none") }, ...cfg.resolver.proxies.map((proxy) => ({ value: proxy.name, label: proxy.name }))]}
             />
           </div>
           <div className="resolverOptionSwitch">
@@ -188,10 +190,10 @@ export function UpstreamsPage({ doc, onChange, validation }: UpstreamsPageProps)
         <div className="workbenchPanel">
           <div className="workbenchPanelHeader">
             <div className="workbenchPanelTitleGroup">
-              <span className="workbenchPanelTitle">上游 DNS</span>
-              <Tag>{cfg.resolver.upstreams.length} 个</Tag>
+              <span className="workbenchPanelTitle">{t("upstreams.upstreamDns")}</span>
+              <Tag>{t("upstreams.count", { count: cfg.resolver.upstreams.length })}</Tag>
             </div>
-            <Button type="primary" size="small" icon={<PlusOutlined />} onClick={addUpstream}>新增上游</Button>
+            <Button type="primary" size="small" icon={<PlusOutlined />} onClick={addUpstream}>{t("upstreams.addUpstream")}</Button>
           </div>
           <div className="workbenchPanelBodyFlush">
           <Table
@@ -202,7 +204,7 @@ export function UpstreamsPage({ doc, onChange, validation }: UpstreamsPageProps)
             dataSource={upstreamRows}
             columns={[
               {
-                title: "移动",
+                title: t("upstreams.move"),
                 width: 76,
                 render: (_value, record) => (
                   <Space.Compact>
@@ -211,21 +213,21 @@ export function UpstreamsPage({ doc, onChange, validation }: UpstreamsPageProps)
                       icon={<ArrowUpOutlined />}
                       onClick={() => moveUpstream(record.index, -1)}
                       disabled={record.index === 0}
-                      aria-label={`上移 ${record.item.name || `第 ${record.index + 1} 个上游`}`}
+                      aria-label={t("upstreams.moveUp", { name: record.item.name || t("upstreams.numberedUpstream", { index: record.index + 1 }) })}
                     />
                     <Button
                       size="small"
                       icon={<ArrowDownOutlined />}
                       onClick={() => moveUpstream(record.index, 1)}
                       disabled={record.index === cfg.resolver.upstreams.length - 1}
-                      aria-label={`下移 ${record.item.name || `第 ${record.index + 1} 个上游`}`}
+                      aria-label={t("upstreams.moveDown", { name: record.item.name || t("upstreams.numberedUpstream", { index: record.index + 1 }) })}
                     />
                   </Space.Compact>
                 )
               },
-              { title: "排序", width: 64, render: (_value, record) => record.index + 1 },
+              { title: t("upstreams.order"), width: 64, render: (_value, record) => record.index + 1 },
               {
-                title: "上游标识",
+                title: t("upstreams.upstreamName"),
                 width: 160,
                 render: (_value, record) => (
                   <FieldWithError error={validation.upstreams[record.index]?.name}>
@@ -234,13 +236,13 @@ export function UpstreamsPage({ doc, onChange, validation }: UpstreamsPageProps)
                 )
               },
               {
-                title: "端点",
+                title: t("upstreams.endpoint"),
                 width: 330,
                 render: (_value, record) => {
                   const draft = endpointDrafts[record.index];
                   const endpointValue = draft ?? formatUpstreamEndpoint(record.item);
                   const endpointError = draft !== undefined && !parseUpstreamEndpoint(draft)
-                    ? "上游端点无效，请检查协议、主机和端口。"
+                    ? t("upstreams.endpointInvalid")
                     : validation.upstreams[record.index]?.endpoint;
                   return (
                     <FieldWithError error={endpointError}>
@@ -274,7 +276,7 @@ export function UpstreamsPage({ doc, onChange, validation }: UpstreamsPageProps)
                 }
               },
               {
-                title: "代理",
+                title: t("upstreams.proxy"),
                 width: 140,
                 render: (_value, record) => (
                   <FieldWithError error={validation.upstreams[record.index]?.proxy}>
@@ -287,7 +289,7 @@ export function UpstreamsPage({ doc, onChange, validation }: UpstreamsPageProps)
                 width: 52,
                 align: "right",
                 render: (_value, record) => (
-                  <Button icon={<DeleteOutlined />} onClick={() => removeUpstream(record.index)} disabled={cfg.resolver.upstreams.length <= 1} aria-label="删除上游" />
+                  <Button icon={<DeleteOutlined />} onClick={() => removeUpstream(record.index)} disabled={cfg.resolver.upstreams.length <= 1} aria-label={t("upstreams.deleteUpstream")} />
                 )
               }
             ]}
@@ -298,10 +300,10 @@ export function UpstreamsPage({ doc, onChange, validation }: UpstreamsPageProps)
         <div className="workbenchPanel">
           <div className="workbenchPanelHeader">
             <div className="workbenchPanelTitleGroup">
-              <span className="workbenchPanelTitle">代理</span>
-              <Tag>{cfg.resolver.proxies.length} 个</Tag>
+              <span className="workbenchPanelTitle">{t("upstreams.proxy")}</span>
+              <Tag>{t("upstreams.count", { count: cfg.resolver.proxies.length })}</Tag>
             </div>
-            <Button size="small" icon={<PlusOutlined />} onClick={addProxy}>新增代理</Button>
+            <Button size="small" icon={<PlusOutlined />} onClick={addProxy}>{t("upstreams.addProxy")}</Button>
           </div>
           <div className="workbenchPanelBodyFlush">
           <Table
@@ -310,19 +312,19 @@ export function UpstreamsPage({ doc, onChange, validation }: UpstreamsPageProps)
             pagination={false}
             scroll={{ x: "max-content" }}
             dataSource={proxyRows}
-            locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="还没有代理配置，上游会直接连接" /> }}
+            locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t("upstreams.noProxy")} /> }}
             columns={[
               {
-                title: "名称",
+                title: t("upstreams.name"),
                 width: 150,
                 render: (_value, record) => (
                   <FieldWithError error={validation.proxies[record.index]?.name}>
-                    <Input status={validation.proxies[record.index]?.name ? "error" : undefined} value={record.item.name} onChange={(event) => updateProxy(record.index, { name: event.target.value })} placeholder="名称" />
+                    <Input status={validation.proxies[record.index]?.name ? "error" : undefined} value={record.item.name} onChange={(event) => updateProxy(record.index, { name: event.target.value })} placeholder={t("upstreams.name")} />
                   </FieldWithError>
                 )
               },
               {
-                title: "协议",
+                title: t("upstreams.protocol"),
                 width: 130,
                 render: (_value, record) => (
                   <Select
@@ -334,13 +336,13 @@ export function UpstreamsPage({ doc, onChange, validation }: UpstreamsPageProps)
                 )
               },
               {
-                title: "地址",
+                title: t("upstreams.address"),
                 width: 220,
                 render: (_value, record) => {
                   const draft = proxyAddressDrafts[record.index];
                   const addressValue = draft ?? formatProxyAddress(record.item);
                   const addressError = draft !== undefined && !parseProxyAddress(draft, record.item)
-                    ? "代理地址无效，请填写主机和 1-65535 端口。"
+                    ? t("upstreams.addressInvalid")
                     : validation.proxies[record.index]?.address;
                   return (
                     <FieldWithError error={addressError}>
@@ -358,17 +360,17 @@ export function UpstreamsPage({ doc, onChange, validation }: UpstreamsPageProps)
                 }
               },
               {
-                title: "用户名",
+                title: t("upstreams.username"),
                 width: 140,
                 render: (_value, record) => (
-                  <Input value={record.item.username} onChange={(event) => updateProxy(record.index, { username: event.target.value })} placeholder="可选" />
+                  <Input value={record.item.username} onChange={(event) => updateProxy(record.index, { username: event.target.value })} placeholder={t("upstreams.optional")} />
                 )
               },
               {
-                title: "密码",
+                title: t("upstreams.password"),
                 width: 140,
                 render: (_value, record) => (
-                  <Input.Password value={record.item.password} onChange={(event) => updateProxy(record.index, { password: event.target.value })} placeholder="可选" />
+                  <Input.Password value={record.item.password} onChange={(event) => updateProxy(record.index, { password: event.target.value })} placeholder={t("upstreams.optional")} />
                 )
               },
               {
@@ -376,7 +378,7 @@ export function UpstreamsPage({ doc, onChange, validation }: UpstreamsPageProps)
                 width: 52,
                 align: "right",
                 render: (_value, record) => (
-                  <Button icon={<DeleteOutlined />} onClick={() => removeProxy(record.index)} aria-label="删除代理" />
+                  <Button icon={<DeleteOutlined />} onClick={() => removeProxy(record.index)} aria-label={t("upstreams.deleteProxy")} />
                 )
               }
             ]}
@@ -496,9 +498,10 @@ function shouldHideEndpointPort(protocol: string, port: string, defaultPort: str
 }
 
 function LoadingPanel() {
+  const { t } = useTranslation();
   return (
-    <Card title="上游">
-      <Typography.Text type="secondary">正在加载本地配置。</Typography.Text>
+    <Card title={t("upstreams.loadingTitle")}>
+      <Typography.Text type="secondary">{t("upstreams.loading")}</Typography.Text>
     </Card>
   );
 }

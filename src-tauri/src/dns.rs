@@ -2,7 +2,10 @@ use crate::config::{
     parse_bootstrap_dns_servers, parse_go_duration, parse_upstream_endpoint, CoreConfig,
     CoreUpstreamConfig,
 };
-use crate::desktop::{DnsLookupRecord, DnsLookupResult, HealthState, ProxyHealth, UpstreamHealth};
+use crate::desktop::{
+    localized_error_message, DnsLookupRecord, DnsLookupResult, HealthState, ProxyHealth,
+    UpstreamHealth,
+};
 use crate::history::{DnsHistoryEvent, DnsHistoryRecorder};
 use crate::logging::LogBuffer;
 use anyhow::{anyhow, Context, Result};
@@ -458,12 +461,12 @@ pub async fn start_runtime(
 fn listener_bind_error(protocol: &str, listen: &str, err: std::io::Error) -> anyhow::Error {
     match err.kind() {
         ErrorKind::AddrInUse => anyhow!(
-            "{protocol} 监听地址 {listen} 已被占用。请停止占用该端口的程序，或在偏好设置里更换监听端口。"
+            "{protocol} listen address {listen} is already in use"
         ),
         ErrorKind::PermissionDenied => anyhow!(
-            "{protocol} 监听地址 {listen} 权限不足。监听 53 等低端口通常需要管理员权限。"
+            "{protocol} listen address {listen} permission denied"
         ),
-        _ => anyhow!("{protocol} 监听地址 {listen} 绑定失败: {err}"),
+        _ => anyhow!("{protocol} listen address {listen} bind failed: {err}"),
     }
 }
 
@@ -2873,6 +2876,10 @@ pub fn build_upstream_health(
                 .as_ref()
                 .map(|h| h.diagnostics(&item.name))
                 .unwrap_or_default();
+            let last_error_message = diagnostics
+                .last_error
+                .as_deref()
+                .map(localized_error_message);
             UpstreamHealth {
                 name: item.name.clone(),
                 endpoint: item.endpoint.clone(),
@@ -2891,6 +2898,7 @@ pub fn build_upstream_health(
                     .unwrap_or(HealthState::Unknown),
                 failure_count: diagnostics.failure_count,
                 last_error: diagnostics.last_error,
+                last_error_message,
                 last_success_at: diagnostics.last_success_at,
                 latency_ms: diagnostics.latency_ms,
             }
@@ -3433,7 +3441,7 @@ mod tests {
         )
         .to_string();
 
-        assert!(err.contains("已被占用"));
+        assert!(err.contains("already in use"));
         assert!(err.contains("127.0.0.1:53"));
     }
 
@@ -3446,8 +3454,7 @@ mod tests {
         )
         .to_string();
 
-        assert!(err.contains("权限不足"));
-        assert!(err.contains("管理员权限"));
+        assert!(err.contains("permission denied"));
     }
 
     #[test]
@@ -3624,16 +3631,16 @@ mod tests {
 
     #[test]
     fn idna_domains_match_hosts_and_routes() {
-        let hosts = compile_hosts(&["例子.测试=192.0.2.20".to_string()]).expect("compile hosts");
-        assert!(hosts.entries.contains_key("xn--fsqu00a.xn--0zwm56d"));
+        let hosts = compile_hosts(&["bücher.test=192.0.2.20".to_string()]).expect("compile hosts");
+        assert!(hosts.entries.contains_key("xn--bcher-kva.test"));
 
         let upstreams = ["cn"].into_iter().map(ToString::to_string).collect();
-        let routes = compile_routes(&["suffix:例子.测试=cn".to_string()], &upstreams)
+        let routes = compile_routes(&["suffix:bücher.test=cn".to_string()], &upstreams)
             .expect("compile routes");
-        assert_route(&routes, "www.xn--fsqu00a.xn--0zwm56d", &[], 1, &["cn"]);
+        assert_route(&routes, "www.xn--bcher-kva.test", &[], 1, &["cn"]);
         assert_route(
             &routes,
-            &normalize_domain_lossy("www.例子.测试"),
+            &normalize_domain_lossy("www.bücher.test"),
             &[],
             1,
             &["cn"],

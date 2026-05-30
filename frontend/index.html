@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="en">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -14,14 +14,14 @@
         root.innerHTML =
           '<main style="padding:28px;font-family:-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;color:#18201b">' +
           '<section style="border:1px solid #cbd5cc;border-radius:8px;background:#fffef8;padding:18px;max-width:760px">' +
-          '<h1 style="margin:0 0 8px;font-size:22px">autodns 渲染失败</h1>' +
-          '<p style="margin:0 0 14px;color:#66746a">桌面外壳已经加载，但前端脚本发生了错误。</p>' +
+          '<h1 style="margin:0 0 8px;font-size:22px">autodns render failed</h1>' +
+          '<p style="margin:0 0 14px;color:#66746a">The desktop shell loaded, but the frontend script failed.</p>' +
           '<pre style="white-space:pre-wrap;background:#f3f0e7;border-radius:6px;padding:12px;overflow:auto">' +
           String(message).replace(/[<>&]/g, function (ch) { return ({ "<": "&lt;", ">": "&gt;", "&": "&amp;" })[ch]; }) +
           "</pre></section></main>";
       };
       window.addEventListener("error", function (event) {
-        window.__autodnsShowBootError(event.message || event.error || "未知脚本错误");
+        window.__autodnsShowBootError(event.message || event.error || "Unknown script error");
       });
       window.addEventListener("unhandledrejection", function (event) {
         window.__autodnsShowBootError(event.reason && event.reason.message ? event.reason.message : event.reason);
@@ -31,7 +31,7 @@
       <main style="padding:28px;font-family:-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;color:#18201b">
         <section style="border:1px solid #cbd5cc;border-radius:8px;background:#fffef8;padding:18px;max-width:760px">
           <h1 style="margin:0 0 8px;font-size:22px">autodns</h1>
-          <p style="margin:0;color:#66746a">正在加载桌面控制台...</p>
+          <p style="margin:0;color:#66746a">Loading desktop console...</p>
         </section>
       </main>
     </div>

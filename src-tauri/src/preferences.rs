@@ -9,6 +9,9 @@ use std::path::PathBuf;
 pub const CLOSE_BEHAVIOR_ASK: &str = "ask";
 pub const CLOSE_BEHAVIOR_HIDE: &str = "hide";
 pub const CLOSE_BEHAVIOR_QUIT: &str = "quit";
+pub const LANGUAGE_SYSTEM: &str = "system";
+pub const LANGUAGE_ZH_CN: &str = "zh-CN";
+pub const LANGUAGE_EN_US: &str = "en-US";
 
 const MIN_WINDOW_WIDTH: u32 = 900;
 const MIN_WINDOW_HEIGHT: u32 = 620;
@@ -52,6 +55,7 @@ pub fn save_desktop_preferences(prefs: DesktopPreferences) -> Result<DesktopPref
 fn default_desktop_preferences() -> DesktopPreferences {
     DesktopPreferences {
         close_behavior: CLOSE_BEHAVIOR_ASK.into(),
+        language: LANGUAGE_SYSTEM.into(),
         start_at_login: false,
         start_at_login_supported: start_at_login_supported(),
         tray_supported: true,
@@ -65,6 +69,10 @@ fn normalize_desktop_preferences(mut prefs: DesktopPreferences) -> DesktopPrefer
     match prefs.close_behavior.as_str() {
         CLOSE_BEHAVIOR_ASK | CLOSE_BEHAVIOR_HIDE | CLOSE_BEHAVIOR_QUIT => {}
         _ => prefs.close_behavior = defaults.close_behavior,
+    }
+    match prefs.language.as_str() {
+        LANGUAGE_SYSTEM | LANGUAGE_ZH_CN | LANGUAGE_EN_US => {}
+        _ => prefs.language = defaults.language,
     }
     prefs.start_at_login_supported = defaults.start_at_login_supported;
     prefs.tray_supported = defaults.tray_supported;

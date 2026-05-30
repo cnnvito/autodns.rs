@@ -1,7 +1,9 @@
 import { Alert, Button, Checkbox, Descriptions, Empty, List, Modal, Space, Switch, Table, Tag, Typography } from "antd";
 import { useState } from "react";
+import { useTranslation } from "react-i18next";
 
 import { LoadingOverlay } from "../shared/LoadingOverlay";
+import { localizedMessageText } from "../shared/format";
 import type { SystemDnsAdapter, SystemDnsSettings, SystemDnsStatus } from "../shared/types";
 
 type SystemDnsPageProps = {
@@ -23,6 +25,7 @@ export function SystemDnsPage({
   onApplySystemDns,
   onRestoreSystemDns
 }: SystemDnsPageProps) {
+  const { t } = useTranslation();
   const [dnsConfirm, setDnsConfirm] = useState<"apply" | "restore" | null>(null);
   const systemDnsEnabled = systemDns?.settings.enabled ?? false;
   const canManageSystemDns = Boolean(systemDns?.supported && systemDns?.canApply && running);
@@ -34,6 +37,12 @@ export function SystemDnsPage({
   const confirmAdapters = dnsConfirm === "restore" ? managedAdapters.length ? managedAdapters : selectedAdapters : selectedAdapters;
   const adaptersLoaded = Boolean(systemDns && systemDns.adapters.length > 0);
   const focusedAdapter = selectedAdapters[0] ?? managedAdapters[0] ?? systemDns?.adapters[0] ?? null;
+  const warnings = systemDns?.warningMessages?.length
+    ? systemDns.warningMessages.map((warning) => localizedMessageText(warning, t))
+    : systemDns?.warnings ?? [];
+  const systemDnsError = systemDns?.lastErrorMessage
+    ? localizedMessageText(systemDns.lastErrorMessage, t)
+    : systemDns?.lastError || "";
 
   function updateSystemDns(patch: Partial<SystemDnsSettings>) {
     const current = systemDns?.settings ?? { enabled: false, targetServers: systemDns?.localServers ?? [], selectedAdapterIds: [] };
@@ -66,52 +75,53 @@ export function SystemDnsPage({
       <section className={embedded ? "systemDnsEmbedded" : "pageWorkbench"}>
         <div className="workbenchToolbar">
           <div className="workbenchToolbarMain">
-            <span className="workbenchTitle">系统 DNS</span>
+            <span className="workbenchTitle">{t("systemDnsPage.title")}</span>
             <Tag color={loading ? "warning" : systemDnsEnabled ? "success" : "default"}>
-              {loading ? "读取中" : systemDnsEnabled ? "允许接管" : "默认关闭"}
+              {loading ? t("systemDnsPage.loading") : systemDnsEnabled ? t("systemDnsPage.takeoverAllowed") : t("systemDnsPage.defaultOff")}
             </Tag>
-            <Tag color={systemDns?.supported ? "processing" : "warning"}>{systemDns?.platform || "未知平台"}</Tag>
+            <Tag color={systemDns?.supported ? "processing" : "warning"}>{systemDns?.platform || t("systemDnsPage.unknownPlatform")}</Tag>
             <Typography.Text type="secondary" ellipsis>
-              目标 DNS: {targetServers.length ? targetServers.join(", ") : "未设置"}
+              {t("systemDnsPage.targetDns")}: {targetServers.length ? targetServers.join(", ") : t("systemDnsPage.notSet")}
             </Typography.Text>
           </div>
           <div className="workbenchToolbarActions">
-            <Switch checkedChildren="允许" unCheckedChildren="关闭" checked={systemDnsEnabled} onChange={(checked) => updateSystemDns({ enabled: checked })} disabled={!canManageSystemDns} />
+            <Switch checkedChildren={t("systemDnsPage.allow")} unCheckedChildren={t("systemDnsPage.off")} checked={systemDnsEnabled} onChange={(checked) => updateSystemDns({ enabled: checked })} disabled={!canManageSystemDns} />
             <Button onClick={() => setDnsConfirm("restore")} disabled={loading || !adaptersLoaded || !canRestoreSystemDns || (!managedAdapters.length && !selectedAdapters.length)}>
-              恢复原 DNS
+              {t("systemDnsPage.restoreOriginal")}
             </Button>
             <Button type="primary" onClick={() => setDnsConfirm("apply")} disabled={loading || !adaptersLoaded || !canManageSystemDns || !systemDnsEnabled || !systemDns?.settings.selectedAdapterIds.length}>
-              接管选中接口
+              {t("systemDnsPage.applySelected")}
             </Button>
           </div>
         </div>
 
         <div className="workbenchBody loadingOverlayHost" aria-busy={loading}>
           <main className="workbenchMain">
-            {systemDns?.warnings.length ? (
+            {warnings.length ? (
               <Space orientation="vertical" size={8} className="pageFill" style={{ marginBottom: 12 }}>
-                {systemDns.warnings.map((warning) => (
+                {warnings.map((warning) => (
                   <Alert key={warning} type="warning" showIcon title={warning} />
                 ))}
               </Space>
             ) : null}
+            {systemDnsError ? <Alert type="error" showIcon title={systemDnsError} style={{ marginBottom: 12 }} /> : null}
             <div className="workbenchStatsGrid" style={{ marginBottom: 12 }}>
               <div className="workbenchMetric">
                 <strong>{systemDns?.adapters.length ?? 0}</strong>
-                <span>网络接口</span>
+                <span>{t("systemDnsPage.adapters")}</span>
               </div>
               <div className="workbenchMetric">
                 <strong>{selectedAdapters.length}</strong>
-                <span>已选择</span>
+                <span>{t("systemDnsPage.selected")}</span>
               </div>
               <div className="workbenchMetric">
                 <strong>{managedAdapters.length}</strong>
-                <span>已接管</span>
+                <span>{t("systemDnsPage.managed")}</span>
               </div>
             </div>
             <div className="workbenchPanel">
               <div className="workbenchPanelHeader">
-                <span className="workbenchPanelTitle">网络接口</span>
+                <span className="workbenchPanelTitle">{t("systemDnsPage.adapters")}</span>
               </div>
               <div className="workbenchPanelBodyFlush">
                 <Table<SystemDnsAdapter>
@@ -119,7 +129,7 @@ export function SystemDnsPage({
                   size="small"
                   pagination={false}
                   dataSource={systemDns?.adapters ?? []}
-                  locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={systemDns ? "未读取到网络接口" : "还没有系统 DNS 状态"} /> }}
+                  locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={systemDns ? t("systemDnsPage.noAdapters") : t("systemDnsPage.noStatus")} /> }}
                   columns={[
                     {
                       title: "",
@@ -129,28 +139,28 @@ export function SystemDnsPage({
                           checked={selectedAdapterIds.has(adapter.id)}
                           disabled={!canManageSystemDns}
                           onChange={(event) => toggleSystemDnsAdapter(adapter.id, event.target.checked)}
-                          aria-label={`选择 ${adapter.name}`}
+                          aria-label={t("systemDnsPage.selectAdapter", { name: adapter.name })}
                         />
                       )
                     },
                     {
-                      title: "接口",
+                      title: t("systemDnsPage.adapter"),
                       dataIndex: "name",
                       ellipsis: true,
                       render: (_value, adapter) => (
                         <Space>
                           <span>{adapter.name || adapter.id}</span>
-                          {selectedAdapterIds.has(adapter.id) ? <Tag color="processing">已选择</Tag> : null}
+                          {selectedAdapterIds.has(adapter.id) ? <Tag color="processing">{t("systemDnsPage.selected")}</Tag> : null}
                         </Space>
                       )
                     },
-                    { title: "描述", dataIndex: "description", ellipsis: true, render: (_value, adapter) => adapter.description || adapter.kind || "-" },
-                    { title: "当前 DNS", dataIndex: "dnsServers", ellipsis: true, render: (value: string[]) => value.length ? value.join(", ") : "自动获取或未设置" },
-                    { title: "状态", dataIndex: "status", width: 90, render: (value: string) => <Tag>{value}</Tag> },
+                    { title: t("systemDnsPage.description"), dataIndex: "description", ellipsis: true, render: (_value, adapter) => adapter.description || adapter.kind || "-" },
+                    { title: t("systemDnsPage.currentDns"), dataIndex: "dnsServers", ellipsis: true, render: (value: string[]) => value.length ? value.join(", ") : t("systemDnsPage.autoDns") },
+                    { title: t("systemDnsPage.status"), dataIndex: "status", width: 90, render: (value: string) => <Tag>{value}</Tag> },
                     {
-                      title: "接管",
+                      title: t("systemDnsPage.takeover"),
                       width: 110,
-                      render: (_value, adapter) => adapter.managed ? <Tag color="success">已接管</Tag> : adapter.virtualAdapter ? <Tag color="warning">虚拟</Tag> : <Tag>未接管</Tag>
+                      render: (_value, adapter) => adapter.managed ? <Tag color="success">{t("systemDnsPage.managed")}</Tag> : adapter.virtualAdapter ? <Tag color="warning">{t("systemDnsPage.virtual")}</Tag> : <Tag>{t("systemDnsPage.unmanaged")}</Tag>
                     }
                   ]}
                 />
@@ -160,34 +170,34 @@ export function SystemDnsPage({
 
           <aside className="workbenchInspector">
             <div className="workbenchInspectorSection">
-              <div className="workbenchInspectorTitle">接口详情</div>
+              <div className="workbenchInspectorTitle">{t("systemDnsPage.details")}</div>
               {focusedAdapter ? (
                 <Descriptions
                   size="small"
                   column={1}
                   items={[
-                    { key: "name", label: "接口", children: focusedAdapter.name || focusedAdapter.id },
-                    { key: "index", label: "索引", children: focusedAdapter.interfaceIndex ? `#${focusedAdapter.interfaceIndex}` : "-" },
-                    { key: "kind", label: "类型", children: focusedAdapter.virtualAdapter ? `${focusedAdapter.kind} · 虚拟` : focusedAdapter.kind || "-" },
-                    { key: "dns", label: "当前 DNS", children: focusedAdapter.dnsServers.length ? focusedAdapter.dnsServers.join(", ") : "自动获取或未设置" },
-                    { key: "original", label: "原始 DNS", children: focusedAdapter.originalDns?.length ? focusedAdapter.originalDns.join(", ") : "-" },
-                    { key: "error", label: "错误", children: focusedAdapter.lastError || "-" }
+                    { key: "name", label: t("systemDnsPage.adapter"), children: focusedAdapter.name || focusedAdapter.id },
+                    { key: "index", label: t("systemDnsPage.index"), children: focusedAdapter.interfaceIndex ? `#${focusedAdapter.interfaceIndex}` : "-" },
+                    { key: "kind", label: t("systemDnsPage.type"), children: focusedAdapter.virtualAdapter ? `${focusedAdapter.kind} · ${t("systemDnsPage.virtual")}` : focusedAdapter.kind || "-" },
+                    { key: "dns", label: t("systemDnsPage.currentDns"), children: focusedAdapter.dnsServers.length ? focusedAdapter.dnsServers.join(", ") : t("systemDnsPage.autoDns") },
+                    { key: "original", label: t("systemDnsPage.originalDns"), children: focusedAdapter.originalDns?.length ? focusedAdapter.originalDns.join(", ") : "-" },
+                    { key: "error", label: t("systemDnsPage.error"), children: adapterErrorText(focusedAdapter, t) || "-" }
                   ]}
                 />
               ) : (
-                <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="选择接口后查看详情" />
+                <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t("systemDnsPage.selectForDetails")} />
               )}
             </div>
           </aside>
-          {loading ? <LoadingOverlay text="正在读取系统 DNS 状态" /> : null}
+          {loading ? <LoadingOverlay text={t("systemDnsPage.loadingStatus")} /> : null}
         </div>
       </section>
 
       <Modal
         open={Boolean(dnsConfirm)}
-        title={dnsConfirm === "apply" ? "接管系统 DNS" : "恢复系统 DNS"}
-        okText="确认执行"
-        cancelText="取消"
+        title={dnsConfirm === "apply" ? t("systemDnsPage.applyTitle") : t("systemDnsPage.restoreTitle")}
+        okText={t("systemDnsPage.confirm")}
+        cancelText={t("actions.cancel")}
         okButtonProps={{ disabled: loading || !adaptersLoaded || !confirmAdapters.length || (dnsConfirm === "apply" && !canManageSystemDns) || (dnsConfirm === "restore" && !canRestoreSystemDns) }}
         onOk={confirmSystemDnsAction}
         onCancel={() => setDnsConfirm(null)}
@@ -197,31 +207,31 @@ export function SystemDnsPage({
             type={dnsConfirm === "apply" ? "warning" : "info"}
             showIcon
             title={dnsConfirm === "apply"
-              ? "即将修改选中网络接口的 DNS 服务器。这个操作可能需要管理员权限。"
-              : "将恢复已接管接口的 DNS 设置；没有原始记录时恢复为自动获取。"}
+              ? t("systemDnsPage.applyWarning")
+              : t("systemDnsPage.restoreInfo")}
           />
           <Descriptions
             size="small"
             bordered
             column={2}
             items={[
-              { key: "target", label: "目标 DNS", children: targetServers.length ? targetServers.join(", ") : "未设置" },
-              { key: "adapters", label: "接口", children: confirmAdapters.length ? `${confirmAdapters.length} 个` : "未选择" }
+              { key: "target", label: t("systemDnsPage.targetDns"), children: targetServers.length ? targetServers.join(", ") : t("systemDnsPage.notSet") },
+              { key: "adapters", label: t("systemDnsPage.adapter"), children: confirmAdapters.length ? t("systemDnsPage.adaptersCount", { count: confirmAdapters.length }) : t("systemDnsPage.noAdapterSelected") }
             ]}
           />
           <List
             size="small"
             bordered
             dataSource={confirmAdapters}
-            locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="未选择接口" /> }}
+            locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t("systemDnsPage.noAdapterSelected")} /> }}
             renderItem={(adapter) => (
               <List.Item>
                 <List.Item.Meta
                   title={adapter.name || adapter.id}
                   description={(
                     <Space orientation="vertical" size={2}>
-                      <Typography.Text type="secondary">当前 DNS: {adapter.dnsServers.length ? adapter.dnsServers.join(", ") : "自动获取或未设置"}</Typography.Text>
-                      {adapter.originalDns?.length ? <Typography.Text type="secondary">原始 DNS: {adapter.originalDns.join(", ")}</Typography.Text> : null}
+                      <Typography.Text type="secondary">{t("systemDnsPage.currentDns")}: {adapter.dnsServers.length ? adapter.dnsServers.join(", ") : t("systemDnsPage.autoDns")}</Typography.Text>
+                      {adapter.originalDns?.length ? <Typography.Text type="secondary">{t("systemDnsPage.originalDns")}: {adapter.originalDns.join(", ")}</Typography.Text> : null}
                     </Space>
                   )}
                 />
@@ -232,4 +242,8 @@ export function SystemDnsPage({
       </Modal>
     </>
   );
+}
+
+function adapterErrorText(adapter: SystemDnsAdapter, translate: (key: string, values?: Record<string, unknown>) => string): string {
+  return adapter.lastErrorMessage ? localizedMessageText(adapter.lastErrorMessage, translate) : adapter.lastError || "";
 }

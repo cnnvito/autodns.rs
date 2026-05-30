@@ -12,6 +12,7 @@ import type {
   DnsHistoryTopDomain,
   DnsHistoryWindow,
   DnsLookupResult,
+  LocalizedMessage,
   ProxyConfig,
   SystemDnsSettings,
   SystemDnsStatus,
@@ -32,6 +33,7 @@ const emptyStatus: DesktopStatus = {
 
 const emptyPreferences: DesktopPreferences = {
   closeBehavior: "ask",
+  language: "system",
   startAtLogin: false,
   startAtLoginSupported: false,
   traySupported: false,
@@ -49,7 +51,8 @@ const emptySystemDnsStatus: SystemDnsStatus = {
   },
   localServers: [],
   adapters: [],
-  warnings: []
+  warnings: [],
+  warningMessages: []
 };
 
 export async function startAutodns(configPath: string): Promise<DesktopStatus> {
@@ -218,7 +221,8 @@ function normalizeDnsHistoryEntry(item: Partial<DnsHistoryList["items"][number]>
     attemptCount: Number.isFinite(item.attemptCount) ? item.attemptCount! : 0,
     responseCode: item.responseCode ?? "",
     minTtl: Number.isFinite(item.minTtl) ? item.minTtl : undefined,
-    error: item.error ?? ""
+    error: item.error ?? "",
+    errorMessage: normalizeLocalizedMessage(item.errorMessage)
   };
 }
 
@@ -281,7 +285,8 @@ function normalizePreferences(prefs: DesktopPreferences): DesktopPreferences {
   return {
     ...emptyPreferences,
     ...prefs,
-    closeBehavior: prefs.closeBehavior === "hide" || prefs.closeBehavior === "quit" ? prefs.closeBehavior : "ask"
+    closeBehavior: prefs.closeBehavior === "hide" || prefs.closeBehavior === "quit" ? prefs.closeBehavior : "ask",
+    language: prefs.language === "zh-CN" || prefs.language === "en-US" ? prefs.language : "system"
   };
 }
 
@@ -296,7 +301,29 @@ function normalizeSystemDnsStatus(status: SystemDnsStatus): SystemDnsStatus {
       selectedAdapterIds: Array.isArray(status.settings?.selectedAdapterIds) ? status.settings.selectedAdapterIds : []
     },
     localServers: Array.isArray(status.localServers) ? status.localServers : [],
-    adapters: Array.isArray(status.adapters) ? status.adapters : [],
-    warnings: Array.isArray(status.warnings) ? status.warnings : []
+    adapters: Array.isArray(status.adapters)
+      ? status.adapters.map((adapter) => ({
+          ...adapter,
+          lastErrorMessage: normalizeLocalizedMessage(adapter.lastErrorMessage)
+        }))
+      : [],
+    warnings: Array.isArray(status.warnings) ? status.warnings : [],
+    warningMessages: Array.isArray(status.warningMessages) ? status.warningMessages.map(normalizeLocalizedMessage).filter(Boolean) as LocalizedMessage[] : [],
+    lastErrorMessage: normalizeLocalizedMessage(status.lastErrorMessage)
+  };
+}
+
+function normalizeLocalizedMessage(message: unknown): LocalizedMessage | undefined {
+  if (!message || typeof message !== "object") {
+    return undefined;
+  }
+  const candidate = message as Partial<LocalizedMessage>;
+  if (typeof candidate.code !== "string" || typeof candidate.message !== "string") {
+    return undefined;
+  }
+  return {
+    code: candidate.code,
+    message: candidate.message,
+    values: candidate.values && typeof candidate.values === "object" ? candidate.values : undefined
   };
 }

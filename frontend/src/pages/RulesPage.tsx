@@ -3,8 +3,9 @@ import { DeleteOutlined, ImportOutlined, PlusOutlined } from "@ant-design/icons"
 import type { SelectProps } from "antd";
 import type { MouseEvent, ReactNode } from "react";
 import { useState } from "react";
+import { useTranslation } from "react-i18next";
 
-import { matchOptions } from "../features/config/options";
+import { getMatchOptions } from "../features/config/options";
 import { defaultRoute, formatHost, formatRoute, parseHost, parseRoute } from "../features/config/transforms";
 import type { ConfigPageProps } from "../features/config/doc";
 import type { ConfigValidation } from "../features/config/validation";
@@ -20,12 +21,14 @@ type ImportPreviewItem = {
 };
 
 type TagRender = SelectProps["tagRender"];
+type Translate = (key: string, values?: Record<string, string | number>) => string;
 
 type RulesPageProps = ConfigPageProps & {
   validation: ConfigValidation["resolver"];
 };
 
 export function RulesPage({ doc, onChange, validation }: RulesPageProps) {
+  const { t } = useTranslation();
   const [importKind, setImportKind] = useState<ImportKind | null>(null);
   const [importDraft, setImportDraft] = useState("");
   const [activeRuleKind, setActiveRuleKind] = useState<ImportKind>("hosts");
@@ -60,15 +63,16 @@ export function RulesPage({ doc, onChange, validation }: RulesPageProps) {
   }
 
   const importPreview = importKind === "hosts"
-    ? parseHostImport(importDraft, cfg.resolver.hosts)
+    ? parseHostImport(importDraft, cfg.resolver.hosts, t)
     : importKind === "routes"
-      ? parseRouteImport(importDraft, cfg.resolver.routes, cfg.resolver.upstreams[0]?.name || "")
+      ? parseRouteImport(importDraft, cfg.resolver.routes, cfg.resolver.upstreams[0]?.name || "", t)
       : [];
   const importableItems = importPreview.filter((item) => item.valid);
   const hostRows = cfg.resolver.hosts.map((raw, index) => ({ key: `host-${index}`, index, row: parseHost(raw) }));
   const routeRows = cfg.resolver.routes.map((raw, index) => ({ key: `route-${index}`, index, row: parseRoute(raw) }));
   const upstreamNames = new Set(cfg.resolver.upstreams.map((item) => item.name));
   const routeUpstreamOptions = cfg.resolver.upstreams.map((item) => ({ value: item.name, label: item.name }));
+  const matchOptions = getMatchOptions(t);
 
   const routeUpstreamTagRender: TagRender = (props) => {
     const { label, value, closable, onClose } = props;
@@ -76,7 +80,7 @@ export function RulesPage({ doc, onChange, validation }: RulesPageProps) {
     return (
       <SelectTag
         color={missingUpstream ? "error" : "processing"}
-        label={missingUpstream ? `${label}（已失效）` : label}
+        label={missingUpstream ? t("rules.upstreamInvalid", { label: String(label) }) : label}
         closable={closable}
         onClose={onClose}
       />
@@ -110,24 +114,24 @@ export function RulesPage({ doc, onChange, validation }: RulesPageProps) {
       <section className="pageWorkbench">
         <div className="workbenchToolbar">
           <div className="workbenchToolbarMain">
-            <span className="workbenchTitle">规则工作台</span>
+            <span className="workbenchTitle">{t("rules.title")}</span>
             <Segmented
               value={activeRuleKind}
               onChange={(value) => setActiveRuleKind(value as ImportKind)}
               options={[
                 { value: "hosts", label: "Hosts" },
-                { value: "routes", label: "域名分流" }
+                { value: "routes", label: t("rules.routeRules") }
               ]}
             />
-            <Tag>{cfg.resolver.hosts.length} 条 Hosts</Tag>
-            <Tag>{cfg.resolver.routes.length} 条分流</Tag>
+            <Tag>{t("rules.hostsCount", { count: cfg.resolver.hosts.length })}</Tag>
+            <Tag>{t("rules.routesCount", { count: cfg.resolver.routes.length })}</Tag>
           </div>
           <div className="workbenchToolbarActions">
-            <Button icon={<ImportOutlined />} onClick={() => openImport(activeRuleKind)}>批量导入</Button>
+            <Button icon={<ImportOutlined />} onClick={() => openImport(activeRuleKind)}>{t("rules.bulkImport")}</Button>
             {activeRuleKind === "hosts" ? (
-              <Button type="primary" icon={<PlusOutlined />} onClick={() => updateResolver({ hosts: [...cfg.resolver.hosts, formatHost({ domain: "", ips: "" })] })}>新增记录</Button>
+              <Button type="primary" icon={<PlusOutlined />} onClick={() => updateResolver({ hosts: [...cfg.resolver.hosts, formatHost({ domain: "", ips: "" })] })}>{t("rules.addRecord")}</Button>
             ) : (
-              <Button type="primary" icon={<PlusOutlined />} onClick={() => updateResolver({ routes: [...cfg.resolver.routes, defaultRoute(cfg.resolver.upstreams[0]?.name || "")] })}>新增分流</Button>
+              <Button type="primary" icon={<PlusOutlined />} onClick={() => updateResolver({ routes: [...cfg.resolver.routes, defaultRoute(cfg.resolver.upstreams[0]?.name || "")] })}>{t("rules.addRoute")}</Button>
             )}
           </div>
         </div>
@@ -145,10 +149,10 @@ export function RulesPage({ doc, onChange, validation }: RulesPageProps) {
                   pagination={false}
                   scroll={{ x: "max-content" }}
                   dataSource={hostRows}
-                  locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="还没有 Hosts 记录" /> }}
+                  locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t("rules.noHosts")} /> }}
                   columns={[
                     {
-                      title: "域名",
+                      title: t("rules.domain"),
                       dataIndex: ["row", "domain"],
                       render: (_value, record) => (
                         <FieldWithError error={validation.hosts[record.index]?.domain}>
@@ -157,7 +161,7 @@ export function RulesPage({ doc, onChange, validation }: RulesPageProps) {
                       )
                     },
                     {
-                      title: "IP 地址",
+                      title: t("rules.ipAddress"),
                       dataIndex: ["row", "ips"],
                       render: (_value, record) => (
                         <FieldWithError error={validation.hosts[record.index]?.ips}>
@@ -179,7 +183,7 @@ export function RulesPage({ doc, onChange, validation }: RulesPageProps) {
                       width: 48,
                       align: "right",
                       render: (_value, record) => (
-                        <Button icon={<DeleteOutlined />} onClick={() => removeHost(record.index)} aria-label="删除 Hosts 记录" />
+                        <Button icon={<DeleteOutlined />} onClick={() => removeHost(record.index)} aria-label={t("rules.deleteHost")} />
                       )
                     }
                   ]}
@@ -189,7 +193,7 @@ export function RulesPage({ doc, onChange, validation }: RulesPageProps) {
           ) : (
             <div className="workbenchPanel">
               <div className="workbenchPanelHeader">
-                <span className="workbenchPanelTitle">域名分流</span>
+                <span className="workbenchPanelTitle">{t("rules.routeRules")}</span>
               </div>
               <div className="workbenchPanelBodyFlush">
                 <Table
@@ -198,17 +202,17 @@ export function RulesPage({ doc, onChange, validation }: RulesPageProps) {
                   pagination={false}
                   scroll={{ x: "max-content" }}
                   dataSource={routeRows}
-                  locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="还没有域名分流" /> }}
+                  locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t("rules.noRoutes")} /> }}
                   columns={[
                     {
-                      title: "匹配方式",
+                      title: t("rules.matchMode"),
                       width: 150,
                       render: (_value, record) => (
                         <Select className="workbenchInlineSelect" value={record.row.match} onChange={(value) => updateRoute(record.index, { ...record.row, match: value })} options={matchOptions} />
                       )
                     },
                     {
-                      title: "域名",
+                      title: t("rules.domain"),
                       width: 220,
                       render: (_value, record) => (
                         <FieldWithError error={validation.routes[record.index]?.domain}>
@@ -217,7 +221,7 @@ export function RulesPage({ doc, onChange, validation }: RulesPageProps) {
                       )
                     },
                     {
-                      title: "目标上游",
+                      title: t("rules.targetUpstream"),
                       render: (_value, record) => (
                         <FieldWithError error={validation.routes[record.index]?.upstreams}>
                           <Select
@@ -228,21 +232,21 @@ export function RulesPage({ doc, onChange, validation }: RulesPageProps) {
                             onChange={(values) => updateRoute(record.index, { ...record.row, upstreams: values })}
                             options={routeUpstreamOptions}
                             tagRender={routeUpstreamTagRender}
-                            placeholder="选择上游"
+                            placeholder={t("rules.selectUpstream")}
                           />
                         </FieldWithError>
                       )
                     },
                     {
-                      title: "状态",
+                      title: t("rules.status"),
                       width: 180,
                       render: (_value, record) => {
                         const status = cfg.resolver.routeStatuses?.[record.index];
                         const missing = record.row.upstreams.filter((name) => !cfg.resolver.upstreams.some((item) => item.name === name));
-                        const invalidReason = status?.invalidReason || (!record.row.upstreams.length ? "未选择上游" : missing.length ? `引用的上游已删除：${missing.join(", ")}` : "");
+                        const invalidReason = status?.invalidReason || (!record.row.upstreams.length ? t("rules.noUpstreamSelected") : missing.length ? t("rules.upstreamDeleted", { names: missing.join(", ") }) : "");
                         return (
                           <Space orientation="vertical" size={4}>
-                            <Tag color={invalidReason ? "error" : "success"}>{invalidReason ? "已失效" : "有效"}</Tag>
+                            <Tag color={invalidReason ? "error" : "success"}>{invalidReason ? t("rules.invalid") : t("rules.valid")}</Tag>
                             {invalidReason ? <Typography.Text type="danger">{invalidReason}</Typography.Text> : null}
                           </Space>
                         );
@@ -253,7 +257,7 @@ export function RulesPage({ doc, onChange, validation }: RulesPageProps) {
                       width: 48,
                       align: "right",
                       render: (_value, record) => (
-                        <Button icon={<DeleteOutlined />} onClick={() => removeRoute(record.index)} aria-label="删除分流规则" />
+                        <Button icon={<DeleteOutlined />} onClick={() => removeRoute(record.index)} aria-label={t("rules.deleteRoute")} />
                       )
                     }
                   ]}
@@ -266,11 +270,11 @@ export function RulesPage({ doc, onChange, validation }: RulesPageProps) {
 
       <Modal
         open={Boolean(importKind)}
-        title={importKind === "hosts" ? "批量导入 Hosts" : "批量导入域名分流"}
+        title={importKind === "hosts" ? t("rules.importHostsTitle") : t("rules.importRoutesTitle")}
         width={720}
-        okText={`导入 ${importableItems.length} 条`}
+        okText={t("rules.importCount", { count: importableItems.length })}
         okButtonProps={{ disabled: importableItems.length === 0 }}
-        cancelText="取消"
+        cancelText={t("actions.cancel")}
         onOk={commitImport}
         onCancel={closeImport}
       >
@@ -283,16 +287,16 @@ export function RulesPage({ doc, onChange, validation }: RulesPageProps) {
             autoSize={{ minRows: 8, maxRows: 12 }}
           />
           <Space>
-            <Tag>{importPreview.length} 行已解析</Tag>
-            <Tag color="processing">{importableItems.length} 条可导入</Tag>
+            <Tag>{t("rules.parsedLines", { count: importPreview.length })}</Tag>
+            <Tag color="processing">{t("rules.importableCount", { count: importableItems.length })}</Tag>
           </Space>
           <List
             size="small"
             bordered
             dataSource={importPreview}
-            locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="粘贴内容后会在这里预览" /> }}
+            locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t("rules.previewEmpty")} /> }}
             renderItem={(item, index) => (
-              <List.Item key={`${item.raw}-${index}`} extra={<Tag color={item.valid ? "success" : "error"}>{item.valid ? "可导入" : item.reason}</Tag>}>
+              <List.Item key={`${item.raw}-${index}`} extra={<Tag color={item.valid ? "success" : "error"}>{item.valid ? t("rules.importable") : item.reason}</Tag>}>
                 <List.Item.Meta title={item.summary} description={item.raw} />
               </List.Item>
             )}
@@ -303,7 +307,7 @@ export function RulesPage({ doc, onChange, validation }: RulesPageProps) {
   );
 }
 
-function parseHostImport(raw: string, existing: string[]): ImportPreviewItem[] {
+function parseHostImport(raw: string, existing: string[], t: Translate): ImportPreviewItem[] {
   const seen = new Set(existing.map((item) => parseHost(item).domain.toLowerCase()).filter(Boolean));
   return contentLines(raw).flatMap((line) => {
     const parsedRows = parseHostImportLine(line);
@@ -322,7 +326,7 @@ function parseHostImport(raw: string, existing: string[]): ImportPreviewItem[] {
         value,
         summary: `${parsed.domain} -> ${parsed.ips.join(", ")}`,
         valid: !duplicate,
-        reason: duplicate ? "域名已存在，已跳过" : ""
+        reason: duplicate ? t("rules.domainDuplicate") : ""
       };
     });
   });
@@ -351,7 +355,7 @@ function parseHostImportLine(line: string): { domain: string; ips: string[] }[] 
   return [];
 }
 
-function parseRouteImport(raw: string, existing: string[], fallbackUpstream: string): ImportPreviewItem[] {
+function parseRouteImport(raw: string, existing: string[], fallbackUpstream: string, t: Translate): ImportPreviewItem[] {
   const seen = new Set(existing.map(routeKey));
   return contentLines(raw).flatMap((line) => {
     const row = parseRouteImportLine(line, fallbackUpstream);
@@ -367,9 +371,9 @@ function parseRouteImport(raw: string, existing: string[], fallbackUpstream: str
     return [{
       raw: line,
       value,
-      summary: `${row.match}:${row.domain} -> ${row.upstreams.join(", ") || "未选择上游"}`,
+      summary: `${row.match}:${row.domain} -> ${row.upstreams.join(", ") || t("rules.noUpstreamSelected")}`,
       valid: !duplicate && row.upstreams.length > 0,
-      reason: duplicate ? "分流规则已存在，已跳过" : "未指定上游"
+      reason: duplicate ? t("rules.routeDuplicate") : t("rules.upstreamMissing")
     }];
   });
 }
@@ -436,9 +440,10 @@ function SelectTag({ color, label, closable, onClose }: { color?: string; label:
 }
 
 function LoadingPanel() {
+  const { t } = useTranslation();
   return (
-    <Card title="规则">
-      <Typography.Text type="secondary">正在加载本地配置。</Typography.Text>
+    <Card title={t("rules.loadingTitle")}>
+      <Typography.Text type="secondary">{t("rules.loading")}</Typography.Text>
     </Card>
   );
 }

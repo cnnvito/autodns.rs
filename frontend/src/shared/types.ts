@@ -8,9 +8,18 @@ export type DesktopStatus = {
   defaultUpstreams: number;
   startedAt?: string;
   lastError?: string;
+  lastErrorMessage?: LocalizedMessage;
   upstreamHealth: UpstreamHealth[];
   proxyHealth: ProxyHealth[];
 };
+
+export type LocalizedMessage = {
+  code: string;
+  message: string;
+  values?: Record<string, string | number | boolean>;
+};
+
+export type CommandError = LocalizedMessage;
 
 export type ConfigDocument = {
   path: string;
@@ -59,6 +68,7 @@ export type DnsHistoryEntry = {
   responseCode: string;
   minTtl?: number;
   error: string;
+  errorMessage?: LocalizedMessage;
 };
 
 export type DnsHistoryTopDomain = {
@@ -178,6 +188,7 @@ export type UpstreamHealth = {
   health: HealthState;
   failureCount: number;
   lastError?: string;
+  lastErrorMessage?: LocalizedMessage;
   lastSuccessAt?: string;
   latencyMs?: number;
 };
@@ -190,9 +201,11 @@ export type ProxyHealth = {
 };
 
 export type CloseBehavior = "ask" | "hide" | "quit";
+export type LanguagePreference = "system" | "zh-CN" | "en-US";
 
 export type DesktopPreferences = {
   closeBehavior: CloseBehavior;
+  language: LanguagePreference;
   startAtLogin: boolean;
   startAtLoginSupported: boolean;
   traySupported: boolean;
@@ -213,7 +226,9 @@ export type SystemDnsStatus = {
   localServers: string[];
   adapters: SystemDnsAdapter[];
   warnings: string[];
+  warningMessages?: LocalizedMessage[];
   lastError?: string;
+  lastErrorMessage?: LocalizedMessage;
 };
 
 export type SystemDnsAdapter = {
@@ -231,4 +246,5 @@ export type SystemDnsAdapter = {
   lastAppliedAt?: string;
   lastRestoredAt?: string;
   lastError?: string;
+  lastErrorMessage?: LocalizedMessage;
 };

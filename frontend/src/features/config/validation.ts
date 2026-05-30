@@ -1,6 +1,8 @@
 import { parseHost, parseRoute } from "./transforms";
 import type { DesktopConfig, ProxyConfig, UpstreamConfig } from "../../shared/types";
 
+type Translate = (key: string, values?: Record<string, string | number>) => string;
+
 export type ConfigValidation = {
   server: {
     listen?: string;
@@ -33,7 +35,7 @@ const emptyValidation: ConfigValidation = {
   healthcheck: {}
 };
 
-export function validateDesktopConfig(config: DesktopConfig): ConfigValidation {
+export function validateDesktopConfig(config: DesktopConfig, t: Translate = defaultTranslate): ConfigValidation {
   const result: ConfigValidation = {
     server: {},
     resolver: {
@@ -47,10 +49,10 @@ export function validateDesktopConfig(config: DesktopConfig): ConfigValidation {
     healthcheck: {}
   };
 
-  validateServer(config, result);
-  validateResolver(config, result);
-  validateCache(config, result);
-  validateHealthcheck(config, result);
+  validateServer(config, result, t);
+  validateResolver(config, result, t);
+  validateCache(config, result, t);
+  validateHealthcheck(config, result, t);
 
   return result;
 }
@@ -76,29 +78,29 @@ export function emptyConfigValidation(): ConfigValidation {
   return structuredClone(emptyValidation);
 }
 
-function validateServer(config: DesktopConfig, result: ConfigValidation) {
+function validateServer(config: DesktopConfig, result: ConfigValidation, t: Translate) {
   const mode = config.server.mode;
   if (!parseSocketAddress(config.server.listen)) {
-    result.server.listen = "监听地址必须是 IP:端口，例如 127.0.0.1:53。";
+    result.server.listen = t("validation.server.listen");
   }
   if (mode === "doh" && !config.server.path.trim().startsWith("/")) {
-    result.server.path = "DoH 路径必须以 / 开头。";
+    result.server.path = t("validation.server.path");
   }
   if ((mode === "doh" || mode === "dot") && !config.server.certFile.trim()) {
-    result.server.certFile = "DoH/DoT 模式需要证书文件。";
+    result.server.certFile = t("validation.server.certFile");
   }
   if ((mode === "doh" || mode === "dot") && !config.server.keyFile.trim()) {
-    result.server.keyFile = "DoH/DoT 模式需要私钥文件。";
+    result.server.keyFile = t("validation.server.keyFile");
   }
 }
 
-function validateResolver(config: DesktopConfig, result: ConfigValidation) {
+function validateResolver(config: DesktopConfig, result: ConfigValidation, t: Translate) {
   if (!isDuration(config.resolver.timeout)) {
-    result.resolver.timeout = "超时时间格式无效，例如 5s、500ms。";
+    result.resolver.timeout = t("validation.resolver.timeout");
   }
   config.resolver.bootstrapDns.forEach((server, index) => {
     if (!parseBootstrapDns(server)) {
-      result.resolver.bootstrapDns[index] = "Fallback DNS 必须是 IP 或 IP:端口。";
+      result.resolver.bootstrapDns[index] = t("validation.resolver.bootstrapDns");
     }
   });
 
@@ -107,17 +109,17 @@ function validateResolver(config: DesktopConfig, result: ConfigValidation) {
     const errors: ConfigValidation["resolver"]["upstreams"][number] = {};
     const name = upstream.name.trim();
     if (!name) {
-      errors.name = "上游名称不能为空。";
+      errors.name = t("validation.upstream.nameRequired");
     } else if (upstreamNames.has(name)) {
-      errors.name = "上游名称不能重复。";
+      errors.name = t("validation.upstream.nameDuplicate");
     } else {
       upstreamNames.set(name, index);
     }
     if (!validUpstreamEndpoint(upstream)) {
-      errors.endpoint = "上游端点无效，请检查协议、主机和端口。";
+      errors.endpoint = t("validation.upstream.endpoint");
     }
     if (upstream.proxy && !config.resolver.proxies.some((proxy) => proxy.name === upstream.proxy)) {
-      errors.proxy = "引用的代理不存在。";
+      errors.proxy = t("validation.upstream.proxyMissing");
     }
     if (Object.keys(errors).length) {
       result.resolver.upstreams[index] = errors;
@@ -129,14 +131,14 @@ function validateResolver(config: DesktopConfig, result: ConfigValidation) {
     const errors: ConfigValidation["resolver"]["proxies"][number] = {};
     const name = proxy.name.trim();
     if (!name) {
-      errors.name = "代理名称不能为空。";
+      errors.name = t("validation.proxy.nameRequired");
     } else if (proxyNames.has(name)) {
-      errors.name = "代理名称不能重复。";
+      errors.name = t("validation.proxy.nameDuplicate");
     } else {
       proxyNames.add(name);
     }
     if (!validProxyAddress(proxy)) {
-      errors.address = "代理地址无效，请填写主机和 1-65535 端口。";
+      errors.address = t("validation.proxy.address");
     }
     if (Object.keys(errors).length) {
       result.resolver.proxies[index] = errors;
@@ -147,11 +149,11 @@ function validateResolver(config: DesktopConfig, result: ConfigValidation) {
     const row = parseHost(raw);
     const errors: ConfigValidation["resolver"]["hosts"][number] = {};
     if (!isDomain(row.domain)) {
-      errors.domain = "Hosts 域名无效。";
+      errors.domain = t("validation.hosts.domain");
     }
     const ips = splitList(row.ips);
     if (!ips.length || ips.some((ip) => !isIpAddress(ip))) {
-      errors.ips = "Hosts 记录必须包含有效 IP。";
+      errors.ips = t("validation.hosts.ips");
     }
     if (Object.keys(errors).length) {
       result.resolver.hosts[index] = errors;
@@ -162,13 +164,13 @@ function validateResolver(config: DesktopConfig, result: ConfigValidation) {
     const row = parseRoute(raw);
     const errors: ConfigValidation["resolver"]["routes"][number] = {};
     if (!isRouteDomain(row.domain)) {
-      errors.domain = "分流域名无效。";
+      errors.domain = t("validation.routes.domain");
     }
     const missing = row.upstreams.filter((name) => !upstreamNames.has(name));
     if (!row.upstreams.length) {
-      errors.upstreams = "分流规则至少需要一个上游。";
+      errors.upstreams = t("validation.routes.upstreamRequired");
     } else if (missing.length) {
-      errors.upstreams = `引用的上游不存在：${missing.join(", ")}`;
+      errors.upstreams = t("validation.routes.upstreamMissing", { names: missing.join(", ") });
     }
     if (Object.keys(errors).length) {
       result.resolver.routes[index] = errors;
@@ -176,32 +178,39 @@ function validateResolver(config: DesktopConfig, result: ConfigValidation) {
   });
 }
 
-function validateCache(config: DesktopConfig, result: ConfigValidation) {
+function validateCache(config: DesktopConfig, result: ConfigValidation, t: Translate) {
   for (const key of ["maxEntries", "maxEntrySize", "minTTL", "maxTTL", "negativeTTL"] as const) {
     if (!isNonNegativeInteger(config.cache[key])) {
-      result.cache[key] = "必须是非负整数。";
+      result.cache[key] = t("validation.common.nonNegativeInteger");
     }
   }
   if (config.cache.maxTTL > 0 && config.cache.minTTL > config.cache.maxTTL) {
-    result.cache.maxTTL = "最大 TTL 不能小于最小 TTL。";
+    result.cache.maxTTL = t("validation.cache.maxTtl");
   }
 }
 
-function validateHealthcheck(config: DesktopConfig, result: ConfigValidation) {
+function validateHealthcheck(config: DesktopConfig, result: ConfigValidation, t: Translate) {
   if (!isDuration(config.healthcheck.interval)) {
-    result.healthcheck.interval = "检查间隔格式无效，例如 30s。";
+    result.healthcheck.interval = t("validation.health.interval");
   }
   if (!isDuration(config.healthcheck.timeout)) {
-    result.healthcheck.timeout = "检查超时格式无效，例如 2s。";
+    result.healthcheck.timeout = t("validation.health.timeout");
   }
   if (config.healthcheck.domain.trim() && config.healthcheck.domain.trim() !== "." && !isDomain(config.healthcheck.domain)) {
-    result.healthcheck.domain = "探测域名无效。";
+    result.healthcheck.domain = t("validation.health.domain");
   }
   for (const key of ["failureThreshold", "recoveryThreshold"] as const) {
     if (!isNonNegativeInteger(config.healthcheck[key])) {
-      result.healthcheck[key] = "必须是非负整数。";
+      result.healthcheck[key] = t("validation.common.nonNegativeInteger");
     }
   }
+}
+
+function defaultTranslate(key: string, values?: Record<string, string | number>): string {
+  if (key === "validation.routes.upstreamMissing") {
+    return `Referenced upstream does not exist: ${values?.names ?? ""}`;
+  }
+  return key;
 }
 
 function validUpstreamEndpoint(upstream: UpstreamConfig): boolean {

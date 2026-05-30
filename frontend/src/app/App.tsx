@@ -16,6 +16,7 @@ import {
 } from "@ant-design/icons";
 import { App as AntdApp, Button, ConfigProvider, Layout, Menu, Modal, Space, Tag, Typography, notification, theme as antdTheme } from "antd";
 import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useTranslation } from "react-i18next";
 
 import {
   applySystemDns,
@@ -37,15 +38,25 @@ import {
   validateConfig
 } from "../shared/api";
 import { emptyConfigValidation, flattenValidationMessages, hasValidationErrors, validateDesktopConfig } from "../features/config/validation";
-import { errorMessage, formatDate } from "../shared/format";
+import { errorMessage, formatDate, localizedMessageText } from "../shared/format";
 import type { ConfigDocument, DesktopPreferences, DesktopStatus, SystemDnsSettings, SystemDnsStatus } from "../shared/types";
 import type { SettingsSection } from "../pages/SettingsPage";
 import { LoadingOverlay } from "../shared/LoadingOverlay";
-import { applyThemePreference, loadThemePreference, normalizeTheme, themeOptions, type ThemePreference } from "./theme";
+import {
+  antdLocaleFor,
+  getSystemLanguage,
+  loadLanguagePreference,
+  normalizeLanguage,
+  resolveLanguage,
+  saveLanguagePreference,
+  type LanguagePreference,
+  type ResolvedLanguage
+} from "../i18n/language";
+import { applyThemePreference, loadThemePreference, normalizeTheme, type ThemePreference } from "./theme";
 
 type NavigationItem = {
   key: string;
-  label: string;
+  labelKey: string;
   icon: ReactNode;
 };
 
@@ -61,6 +72,7 @@ const notificationConfig = {
 
 const defaultPreferences: DesktopPreferences = {
   closeBehavior: "ask",
+  language: "system",
   startAtLogin: false,
   startAtLoginSupported: false,
   traySupported: false,
@@ -77,23 +89,13 @@ const SettingsPage = lazy(() => import("../pages/SettingsPage").then((module) =>
 const UpstreamsPage = lazy(() => import("../pages/UpstreamsPage").then((module) => ({ default: module.UpstreamsPage })));
 
 const navigationItems: NavigationItem[] = [
-  { key: "overview", label: "状态", icon: <DashboardOutlined /> },
-  { key: "rules", label: "规则", icon: <DatabaseOutlined /> },
-  { key: "upstreams", label: "上游", icon: <ApiOutlined /> },
-  { key: "lookup", label: "查询", icon: <SearchOutlined /> },
-  { key: "history", label: "历史", icon: <HistoryOutlined /> },
-  { key: "settings", label: "偏好设置", icon: <SettingOutlined /> }
+  { key: "overview", labelKey: "nav.overview", icon: <DashboardOutlined /> },
+  { key: "rules", labelKey: "nav.rules", icon: <DatabaseOutlined /> },
+  { key: "upstreams", labelKey: "nav.upstreams", icon: <ApiOutlined /> },
+  { key: "lookup", labelKey: "nav.lookup", icon: <SearchOutlined /> },
+  { key: "history", labelKey: "nav.history", icon: <HistoryOutlined /> },
+  { key: "settings", labelKey: "nav.settings", icon: <SettingOutlined /> }
 ];
-
-const menuItems = navigationItems.map((item) => ({
-  key: item.key,
-  label: (
-    <span className="desktopNavLabel">
-      {item.icon}
-      <span>{item.label}</span>
-    </span>
-  )
-}));
 
 function applyOptimisticSystemDnsSettings(status: SystemDnsStatus, settings: SystemDnsSettings): SystemDnsStatus {
   const selectedAdapterIds = new Set(settings.selectedAdapterIds);
@@ -138,6 +140,7 @@ function getSystemDarkPreference(): boolean {
 }
 
 export function App() {
+  const { t, i18n } = useTranslation();
   const [status, setStatus] = useState<DesktopStatus | null>(null);
   const [configDoc, setConfigDoc] = useState<ConfigDocument | null>(null);
   const [savedConfigDoc, setSavedConfigDoc] = useState<ConfigDocument | null>(null);
@@ -146,6 +149,8 @@ export function App() {
   const [initializing, setInitializing] = useState(true);
   const [theme, setTheme] = useState<ThemePreference>(() => loadThemePreference());
   const [systemDark, setSystemDark] = useState(() => getSystemDarkPreference());
+  const [language, setLanguage] = useState<LanguagePreference>(() => loadLanguagePreference());
+  const [systemLanguage, setSystemLanguage] = useState<ResolvedLanguage>(() => getSystemLanguage());
   const [preferences, setPreferences] = useState<DesktopPreferences>(defaultPreferences);
   const [systemDns, setSystemDns] = useState<SystemDnsStatus | null>(null);
   const [systemDnsLoading, setSystemDnsLoading] = useState(false);
@@ -200,9 +205,11 @@ export function App() {
     });
   }, []);
 
+  const translateError = useCallback((err: unknown) => errorMessage(err, (key, values) => t(key, values)), [t]);
+
   const notifyError = useCallback((title: string, err: unknown) => {
-    notify("error", title, errorMessage(err));
-  }, [notify]);
+    notify("error", title, translateError(err));
+  }, [notify, translateError]);
 
   async function refreshSystemDns(force = false) {
     if (systemDnsLoadingRef.current) {
@@ -223,9 +230,9 @@ export function App() {
 
   useEffect(() => {
     bootstrap()
-      .catch((err: unknown) => notifyError("初始化失败", err))
+      .catch((err: unknown) => notifyError(t("notifications.bootstrapFailed"), err))
       .finally(() => setInitializing(false));
-  }, [notifyError]);
+  }, [notifyError, t]);
 
   async function bootstrap() {
     const [doc, prefs, nextStatus, nextSystemDns] = await Promise.all([
@@ -237,6 +244,7 @@ export function App() {
     setConfigDoc(doc);
     setSavedConfigDoc(doc);
     setPreferences(prefs);
+    setLanguage(normalizeLanguage(prefs.language));
     setStatus(nextStatus);
     setSystemDns(nextSystemDns);
   }
@@ -256,13 +264,31 @@ export function App() {
   useEffect(() => {
     if (activeTab === "settings" && settingsSection === "system-dns" && !systemDnsAdaptersRequested.current) {
       systemDnsAdaptersRequested.current = true;
-      refreshSystemDns(true).catch((err: unknown) => notifyError("系统 DNS 状态读取失败", err));
+      refreshSystemDns(true).catch((err: unknown) => notifyError(t("notifications.systemDnsStatusFailed"), err));
     }
-  }, [activeTab, notifyError, settingsSection]);
+  }, [activeTab, notifyError, settingsSection, t]);
 
   useEffect(() => {
     applyThemePreference(theme);
   }, [theme]);
+
+  const resolvedLanguage = resolveLanguage(language, systemLanguage);
+
+  useEffect(() => {
+    saveLanguagePreference(language);
+  }, [language]);
+
+  useEffect(() => {
+    if (preferences.language !== language) {
+      handlePreferencesChange({ language }).catch(() => undefined);
+    }
+  }, [language]);
+
+  useEffect(() => {
+    if (i18n.language !== resolvedLanguage) {
+      void i18n.changeLanguage(resolvedLanguage);
+    }
+  }, [i18n, resolvedLanguage]);
 
   useEffect(() => {
     const media = window.matchMedia?.("(prefers-color-scheme: dark)");
@@ -276,12 +302,20 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    const runtimeError = status?.lastError || "";
+    const syncSystemLanguage = () => setSystemLanguage(getSystemLanguage());
+    window.addEventListener("languagechange", syncSystemLanguage);
+    return () => window.removeEventListener("languagechange", syncSystemLanguage);
+  }, []);
+
+  useEffect(() => {
+    const runtimeError = status?.lastErrorMessage
+      ? localizedMessageText(status.lastErrorMessage, (key, values) => t(key, values))
+      : status?.lastError || "";
     if (runtimeError && runtimeError !== lastRuntimeError.current) {
-      notify("error", "运行时异常", runtimeError);
+      notify("error", t("notifications.runtimeError"), runtimeError);
     }
     lastRuntimeError.current = runtimeError;
-  }, [notify, status?.lastError]);
+  }, [notify, status?.lastError, status?.lastErrorMessage, t]);
 
   useEffect(() => {
     let unlisten: (() => void) | undefined;
@@ -294,29 +328,52 @@ export function App() {
   }, []);
 
   const running = status?.running ?? false;
-  const validation = useMemo(() => configDoc ? validateDesktopConfig(configDoc.config) : emptyConfigValidation(), [configDoc]);
+  const validation = useMemo(() => configDoc ? validateDesktopConfig(configDoc.config, (key, values) => t(key, values)) : emptyConfigValidation(), [configDoc, t]);
   const validationMessages = useMemo(() => flattenValidationMessages(validation), [validation]);
   const validationErrorCount = validationMessages.length;
-  const lastStarted = useMemo(() => formatDate(status?.startedAt), [status?.startedAt]);
+  const lastStarted = useMemo(() => formatDate(status?.startedAt, resolvedLanguage), [status?.startedAt, resolvedLanguage]);
   const restartRequired = useMemo(() => needsRuntimeRestart(configDoc, savedConfigDoc), [configDoc, savedConfigDoc]);
   const dirty = useMemo(() => hasConfigChanges(configDoc, savedConfigDoc), [configDoc, savedConfigDoc]);
   const effectiveDark = theme === "system" ? systemDark : theme === "dark";
-  const listenLine = running ? `${status?.listen || "本地监听中"} · ${(status?.mode || "udp").toUpperCase()}` : "服务未运行";
+  const antdLocale = useMemo(() => antdLocaleFor(resolvedLanguage), [resolvedLanguage]);
+  const menuItems = useMemo(() => navigationItems.map((item) => ({
+    key: item.key,
+    label: (
+      <span className="desktopNavLabel">
+        {item.icon}
+        <span>{t(item.labelKey)}</span>
+      </span>
+    )
+  })), [t]);
+  const languageOptions = useMemo(() => [
+    { value: "system", label: t("settings.languageSystem") },
+    { value: "zh-CN", label: t("settings.languageZhCN") },
+    { value: "en-US", label: t("settings.languageEnUS") }
+  ], [t]);
+  const themeOptions = useMemo(() => [
+    { value: "system", label: t("settings.themeSystem") },
+    { value: "light", label: t("settings.themeLight") },
+    { value: "dark", label: t("settings.themeDark") }
+  ], [t]);
+  const listenLine = running ? `${status?.listen || t("status.listenLocal")} · ${(status?.mode || "udp").toUpperCase()}` : t("status.serviceNotRunning");
   const healthyUpstreams = status?.upstreamHealth.filter((item) => item.health === "healthy").length ?? 0;
   const unhealthyUpstreams = status?.upstreamHealth.filter((item) => item.health === "unhealthy").length ?? 0;
   const systemDnsState = systemDnsLoading
-    ? "读取中"
+    ? t("status.systemDnsLoading")
     : systemDns?.settings.enabled
-      ? "允许接管"
+      ? t("status.systemDnsApplyingAllowed")
       : systemDns?.supported
-        ? "未接管"
-        : "不可用";
+        ? t("status.systemDnsUnmanaged")
+        : t("status.systemDnsUnavailable");
+  const runtimeStatusError = status?.lastErrorMessage
+    ? localizedMessageText(status.lastErrorMessage, (key, values) => t(key, values))
+    : status?.lastError || "";
   const dirtyHint = running
     ? restartRequired
-      ? "监听入口已变更，保存时会自动重启服务。"
-      : "保存后会立即替换运行中的上游、分流、缓存等配置。"
-    : "服务未启动；保存后会在下次启动时使用新配置。";
-  const workspaceLoadingText = initializing ? "正在加载本地配置" : busy ? busyText || "正在处理操作" : "";
+      ? t("config.dirtyHintRestart")
+      : t("config.dirtyHintHotReload")
+    : t("config.dirtyHintStopped");
+  const workspaceLoadingText = initializing ? t("busy.loadingConfig") : busy ? busyText || t("busy.processing") : "";
 
   const handleConfigDocChange = useCallback((doc: ConfigDocument) => {
     setConfigDoc(doc);
@@ -333,13 +390,13 @@ export function App() {
   }
 
   async function handleStart() {
-    beginBusy("正在启动 DNS 服务");
+    beginBusy(t("busy.startingService"));
     try {
       const nextStatus = await startAutodns("");
       setStatus(nextStatus);
-      notify("success", "服务已启动", nextStatus.listen || "本地 DNS 已开始监听");
+      notify("success", t("notifications.serviceStarted"), nextStatus.listen || t("notifications.serviceStartedDescription"));
     } catch (err) {
-      notifyError("启动失败", err);
+      notifyError(t("notifications.serviceStartFailed"), err);
     } finally {
       finishBusy();
     }
@@ -350,15 +407,15 @@ export function App() {
       return;
     }
     if (hasValidationErrors(validation)) {
-      notify("warning", "配置校验未通过", validationMessages.slice(0, 3).join("\n"));
+      notify("warning", t("notifications.validateRejected"), validationMessages.slice(0, 3).join("\n"));
       return;
     }
-    beginBusy("正在校验配置");
+    beginBusy(t("busy.validatingConfig"));
     try {
       await validateConfig(configDoc.config);
-      notify("success", "配置校验通过", "当前配置可以保存。");
+      notify("success", t("notifications.validatePassed"), t("notifications.validatePassedDescription"));
     } catch (err) {
-      notifyError("配置校验失败", err);
+      notifyError(t("notifications.validateFailed"), err);
     } finally {
       finishBusy();
     }
@@ -369,36 +426,36 @@ export function App() {
       return;
     }
     if (hasValidationErrors(validation)) {
-      notify("warning", "请先修正配置", validationMessages.slice(0, 3).join("\n"));
+      notify("warning", t("notifications.validateRequired"), validationMessages.slice(0, 3).join("\n"));
       return;
     }
-    beginBusy(restartRequired ? "正在保存配置并重启服务" : "正在保存配置");
+    beginBusy(restartRequired ? t("busy.savingConfigAndRestarting") : t("busy.savingConfig"));
     try {
       const result = await saveConfig(configDoc);
       setSavedConfigDoc(configDoc);
       setStatus(result.status);
       if (result.action === "restarted") {
-        notify("success", "配置已保存并重启", "监听入口发生变化，服务已自动重启。");
+        notify("success", t("notifications.configSavedRestarted"), t("notifications.configSavedRestartedDescription"));
       } else if (result.action === "hotReloaded") {
-        notify("success", "配置已保存并生效", "运行中的 DNS 服务已使用新配置。");
+        notify("success", t("notifications.configSavedHotReloaded"), t("notifications.configSavedHotReloadedDescription"));
       } else {
-        notify("success", "配置已保存", "本地配置库已更新。");
+        notify("success", t("notifications.configSaved"), t("notifications.configSavedDescription"));
       }
     } catch (err) {
-      notifyError("保存失败", err);
+      notifyError(t("notifications.saveFailed"), err);
     } finally {
       finishBusy();
     }
   }
 
   async function handleStop() {
-    beginBusy("正在停止 DNS 服务");
+    beginBusy(t("busy.stoppingService"));
     try {
       const nextStatus = await stopAutodns();
       setStatus(nextStatus);
-      notify("info", "服务已停止");
+      notify("info", t("notifications.serviceStopped"));
     } catch (err) {
-      notifyError("停止失败", err);
+      notifyError(t("notifications.serviceStopFailed"), err);
     } finally {
       finishBusy();
     }
@@ -408,14 +465,14 @@ export function App() {
     if (!running) {
       return;
     }
-    beginBusy("正在重启 DNS 服务");
+    beginBusy(t("busy.restartingService"));
     try {
       await stopAutodns();
       const nextStatus = await startAutodns("");
       setStatus(nextStatus);
-      notify("success", "服务已重启", "本地 DNS 已重新开始监听。");
+      notify("success", t("notifications.serviceRestarted"), t("notifications.serviceRestartedDescription"));
     } catch (err) {
-      notifyError("重启失败", err);
+      notifyError(t("notifications.restartFailed"), err);
     } finally {
       finishBusy();
     }
@@ -426,7 +483,7 @@ export function App() {
       return;
     }
     setConfigDoc(savedConfigDoc);
-    notify("info", "已放弃修改", "配置已恢复到上次保存状态。");
+    notify("info", t("notifications.configDiscarded"), t("notifications.configDiscardedDescription"));
   }
 
   async function handlePreferencesChange(patch: Partial<DesktopPreferences>) {
@@ -435,10 +492,10 @@ export function App() {
     try {
       const saved = await savePreferences(next);
       setPreferences(saved);
-      notify("success", "桌面行为已更新");
+      notify("success", t("notifications.desktopBehaviorSaved"));
     } catch (err) {
       setPreferences(preferences);
-      notifyError("桌面行为保存失败", err);
+      notifyError(t("notifications.desktopBehaviorSaveFailed"), err);
     }
   }
 
@@ -456,7 +513,7 @@ export function App() {
     } catch (err) {
       if (previous && saveId === lastSystemDnsSaveId.current) {
         setSystemDns(previous);
-        notifyError("系统 DNS 设置保存失败", err);
+        notifyError(t("notifications.systemDnsSaveFailed"), err);
       }
     } finally {
       pendingSystemDnsSave.current = Math.max(0, pendingSystemDnsSave.current - 1);
@@ -464,24 +521,24 @@ export function App() {
   }
 
   async function handleApplySystemDns() {
-    beginBusy("正在接管系统 DNS");
+    beginBusy(t("busy.applyingSystemDns"));
     try {
       setSystemDns(await applySystemDns());
-      notify("success", "系统 DNS 已接管");
+      notify("success", t("notifications.systemDnsApplied"));
     } catch (err) {
-      notifyError("系统 DNS 接管失败", err);
+      notifyError(t("notifications.systemDnsApplyFailed"), err);
     } finally {
       finishBusy();
     }
   }
 
   async function handleRestoreSystemDns() {
-    beginBusy("正在恢复系统 DNS");
+    beginBusy(t("busy.restoringSystemDns"));
     try {
       setSystemDns(await restoreSystemDns());
-      notify("success", "系统 DNS 已恢复");
+      notify("success", t("notifications.systemDnsRestored"));
     } catch (err) {
-      notifyError("系统 DNS 恢复失败", err);
+      notifyError(t("notifications.systemDnsRestoreFailed"), err);
     } finally {
       finishBusy();
     }
@@ -491,12 +548,12 @@ export function App() {
     if (!running) {
       return;
     }
-    beginBusy("正在清理 DNS 缓存");
+    beginBusy(t("busy.clearingCache"));
     try {
       const cleared = await clearDnsCache();
-      notify("success", "缓存已清理", cleared ? `已移除 ${cleared} 条缓存记录。` : "当前没有可清理的缓存记录。");
+      notify("success", t("notifications.cacheCleared"), cleared ? t("notifications.cacheClearedCount", { count: cleared }) : t("notifications.cacheClearedEmpty"));
     } catch (err) {
-      notifyError("清理缓存失败", err);
+      notifyError(t("notifications.cacheClearFailed"), err);
     } finally {
       finishBusy();
     }
@@ -506,9 +563,9 @@ export function App() {
     setClosePromptOpen(false);
     try {
       await hideWindow();
-      notify("info", "窗口已隐藏", "可从托盘重新打开。");
+      notify("info", t("notifications.windowHidden"), t("notifications.windowHiddenDescription"));
     } catch (err) {
-      notifyError("隐藏窗口失败", err);
+      notifyError(t("notifications.hideWindowFailed"), err);
     }
   }
 
@@ -517,7 +574,7 @@ export function App() {
     try {
       await quitApp();
     } catch (err) {
-      notifyError("退出失败", err);
+      notifyError(t("notifications.quitFailed"), err);
     }
   }
 
@@ -541,7 +598,7 @@ export function App() {
       return <LookupPage running={running} />;
     }
     if (activeTab === "history") {
-      return <HistoryPage />;
+      return <HistoryPage language={resolvedLanguage} />;
     }
     if (activeTab === "settings") {
       return (
@@ -549,6 +606,8 @@ export function App() {
           doc={configDoc}
           onChange={handleConfigDocChange}
           validation={validation}
+          language={language}
+          languageOptions={languageOptions}
           theme={theme}
           themeOptions={themeOptions}
           preferences={preferences}
@@ -558,6 +617,7 @@ export function App() {
           systemDns={systemDns}
           systemDnsLoading={systemDnsLoading}
           onClearDnsCache={handleClearDnsCache}
+          onLanguageChange={(value) => setLanguage(normalizeLanguage(value))}
           onThemeChange={(value) => setTheme(normalizeTheme(value))}
           onPreferencesChange={handlePreferencesChange}
           onSectionChange={setSettingsSection}
@@ -577,12 +637,14 @@ export function App() {
         onNavigate={handleNavigate}
         onApplySystemDns={handleApplySystemDns}
         onRestoreSystemDns={handleRestoreSystemDns}
+        language={resolvedLanguage}
       />
     );
   }
 
   return (
     <ConfigProvider
+      locale={antdLocale}
       theme={{
         algorithm: effectiveDark ? antdTheme.darkAlgorithm : antdTheme.defaultAlgorithm,
         cssVar: { key: "autodns" }
@@ -607,17 +669,17 @@ export function App() {
                   onClick={running ? handleStop : handleStart}
                   disabled={busy}
                 >
-                  {busy ? "处理中" : running ? "停止" : "启动"}
+                  {busy ? t("common.processing") : running ? t("actions.stop") : t("actions.start")}
                 </Button>
                 <Button icon={<ReloadOutlined />} onClick={handleRestart} disabled={busy || !running}>
-                  重启
+                  {t("actions.restart")}
                 </Button>
               </Space>
             </div>
           </Header>
           <Layout className="desktopBody">
             <Sider width={220} className="desktopSidebar" theme={effectiveDark ? "dark" : "light"}>
-              <div className="desktopSidebarLabel">AUTODNS</div>
+              <div className="desktopSidebarLabel">{t("app.sidebarLabel")}</div>
               <Menu
                 className="desktopNavMenu"
                 mode="inline"
@@ -625,10 +687,10 @@ export function App() {
                 items={menuItems}
                 onClick={({ key }) => setActiveTab(key)}
               />
-              <div className="desktopSidebarStatus" aria-label="服务状态">
+              <div className="desktopSidebarStatus" aria-label={t("status.service")}>
                 <div className="desktopSidebarStatusLine">
                   <Tag color={running ? "success" : "default"} className="runtimeTag">
-                    {running ? "运行中" : "已停止"}
+                    {running ? t("status.running") : t("status.stopped")}
                   </Tag>
                 </div>
                 <Button
@@ -646,7 +708,7 @@ export function App() {
             </Sider>
             <Content className="appContent">
               <section className="workspace loadingOverlayHost" aria-busy={Boolean(workspaceLoadingText)}>
-                <Suspense fallback={<LoadingOverlay text="正在加载页面" compact />}>
+                <Suspense fallback={<LoadingOverlay text={t("app.loadingPage")} compact />}>
                   {renderActivePage()}
                 </Suspense>
                 {workspaceLoadingText ? <LoadingOverlay text={workspaceLoadingText} /> : null}
@@ -654,18 +716,18 @@ export function App() {
               {dirty ? (
                 <div className="configSaveShelf" role="status" aria-live="polite">
                   <div className="configSaveShelfText">
-                    <strong>未保存修改</strong>
-                    <span>{validationErrorCount ? `发现 ${validationErrorCount} 个配置问题，请修正后再保存。` : dirtyHint}</span>
+                    <strong>{t("config.dirtyTitle")}</strong>
+                    <span>{validationErrorCount ? t("config.dirtyValidation", { count: validationErrorCount }) : dirtyHint}</span>
                   </div>
                   <Space.Compact className="configSaveShelfActions">
                     <Button size="small" icon={<CheckCircleOutlined />} onClick={handleValidateConfig} disabled={busy || !configDoc}>
-                      校验
+                      {t("actions.validate")}
                     </Button>
                     <Button size="small" icon={<RollbackOutlined />} onClick={handleDiscardConfig} disabled={busy || !dirty}>
-                      放弃
+                      {t("actions.discard")}
                     </Button>
                     <Button size="small" type="primary" icon={<SaveOutlined />} onClick={handleSaveConfig} disabled={busy || !configDoc || !dirty || validationErrorCount > 0}>
-                      保存
+                      {t("actions.save")}
                     </Button>
                   </Space.Compact>
                 </div>
@@ -673,11 +735,11 @@ export function App() {
             </Content>
           </Layout>
           <Footer className="desktopStatusBar">
-            <Typography.Text type={dirty ? "warning" : "secondary"}>配置：{dirty ? "未保存" : "已保存"}</Typography.Text>
-            <Typography.Text type="secondary">系统 DNS：{systemDnsState}</Typography.Text>
-            <Typography.Text type="secondary">缓存：{configDoc?.config.cache.enabled ? "启用" : "关闭"}</Typography.Text>
-            <Typography.Text type="secondary">上游：{healthyUpstreams} 健康 / {unhealthyUpstreams} 异常</Typography.Text>
-            {status?.lastError ? <Typography.Text type="danger">最近错误：{status.lastError}</Typography.Text> : <Typography.Text type="secondary">最近错误：无</Typography.Text>}
+            <Typography.Text type={dirty ? "warning" : "secondary"}>{t("status.config")}：{dirty ? t("config.unsaved") : t("config.saved")}</Typography.Text>
+            <Typography.Text type="secondary">{t("status.systemDns")}：{systemDnsState}</Typography.Text>
+            <Typography.Text type="secondary">{t("status.cache")}：{configDoc?.config.cache.enabled ? t("common.enabled") : t("common.disabled")}</Typography.Text>
+            <Typography.Text type="secondary">{t("status.upstreams")}：{t("status.upstreamHealth", { healthy: healthyUpstreams, unhealthy: unhealthyUpstreams })}</Typography.Text>
+            {runtimeStatusError ? <Typography.Text type="danger">{t("status.lastError")}：{runtimeStatusError}</Typography.Text> : <Typography.Text type="secondary">{t("status.lastError")}：{t("status.noError")}</Typography.Text>}
             <Typography.Text type="secondary" className="statusBarEnd">
               autodns{appVersion ? ` v${appVersion}` : ""}
             </Typography.Text>
@@ -685,16 +747,16 @@ export function App() {
         </Layout>
         <Modal
           open={closePromptOpen}
-          title="关闭 autodns"
+          title={t("app.closeTitle")}
           footer={[
             <Button key="cancel" onClick={() => setClosePromptOpen(false)}>
-              取消
+              {t("actions.cancel")}
             </Button>,
             <Button key="hide" onClick={handleHideToTray}>
-              隐藏窗口
+              {t("actions.hideWindow")}
             </Button>,
             <Button key="quit" type="primary" danger onClick={handleQuitApp}>
-              退出程序
+              {t("actions.quitApp")}
             </Button>
           ]}
           onCancel={() => setClosePromptOpen(false)}

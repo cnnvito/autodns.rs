@@ -1,9 +1,11 @@
 import { App as AntdApp, Button, Descriptions, Empty, Input, List, Segmented, Space, Table, Tag, Typography, type TableColumnsType } from "antd";
 import { DeleteOutlined, ReloadOutlined, SearchOutlined } from "@ant-design/icons";
 import { useCallback, useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
+import type { ResolvedLanguage } from "../i18n/language";
 
 import { clearDnsHistory, dnsHistoryTopDomains, listDnsHistory } from "../shared/api";
-import { errorMessage, formatDate } from "../shared/format";
+import { errorMessage, formatDate, localizedMessageText } from "../shared/format";
 import type {
   DnsHistoryEntry,
   DnsHistoryStatusFilter,
@@ -14,26 +16,8 @@ import type {
 const defaultHistoryPageSize = 20;
 const historyPageSizeOptions = [20, 50, 100];
 
-const sourceLabels: Record<string, string> = {
-  upstream: "上游",
-  cache: "缓存",
-  hosts: "Hosts",
-  local: "本地",
-  error: "失败"
-};
-
-const statusOptions: Array<{ value: DnsHistoryStatusFilter; label: string }> = [
-  { value: "all", label: "全部" },
-  { value: "errors", label: "异常" }
-];
-
-const windowOptions: Array<{ value: DnsHistoryWindow; label: string }> = [
-  { value: "1h", label: "1 小时" },
-  { value: "24h", label: "24 小时" },
-  { value: "all", label: "全部时间" }
-];
-
-export function HistoryPage() {
+export function HistoryPage({ language }: { language: ResolvedLanguage }) {
+  const { t } = useTranslation();
   const { modal } = AntdApp.useApp();
   const [domain, setDomain] = useState("");
   const [filter, setFilter] = useState("");
@@ -67,11 +51,11 @@ export function HistoryPage() {
       setTotal(history.total);
       setTopDomains(nextTopDomains);
     } catch (err) {
-      setError(errorMessage(err));
+      setError(errorMessage(err, (key, values) => t(key, values)));
     } finally {
       setBusy(false);
     }
-  }, [filter, historyWindow, page, statusFilter]);
+  }, [filter, historyWindow, page, statusFilter, t]);
 
   useEffect(() => {
     void refresh();
@@ -94,11 +78,11 @@ export function HistoryPage() {
 
   async function clearHistory() {
     modal.confirm({
-      title: "清空解析历史",
-      content: "清空后无法从本地历史中恢复这些记录。",
-      okText: "清空",
+      title: t("history.clearTitle"),
+      content: t("history.clearDescription"),
+      okText: t("history.clear"),
       okButtonProps: { danger: true },
-      cancelText: "取消",
+      cancelText: t("actions.cancel"),
       onOk: async () => {
         setBusy(true);
         setError("");
@@ -109,7 +93,7 @@ export function HistoryPage() {
           setTotal(0);
           setPage(1);
         } catch (err) {
-          setError(errorMessage(err));
+          setError(errorMessage(err, (key, values) => t(key, values)));
         } finally {
           setBusy(false);
         }
@@ -117,20 +101,36 @@ export function HistoryPage() {
     });
   }
 
+  const sourceLabels: Record<string, string> = {
+    upstream: t("history.source.upstream"),
+    cache: t("history.source.cache"),
+    hosts: t("history.source.hosts"),
+    local: t("history.source.local"),
+    error: t("history.source.error")
+  };
+  const statusOptions: Array<{ value: DnsHistoryStatusFilter; label: string }> = [
+    { value: "all", label: t("history.all") },
+    { value: "errors", label: t("history.errors") }
+  ];
+  const windowOptions: Array<{ value: DnsHistoryWindow; label: string }> = [
+    { value: "1h", label: t("history.oneHour") },
+    { value: "24h", label: t("history.twentyFourHours") },
+    { value: "all", label: t("history.allTime") }
+  ];
   const columns: TableColumnsType<DnsHistoryEntry> = [
-    { title: "时间", dataIndex: "startedAt", width: 160, render: (value: string) => formatDate(value) || "-" },
-    { title: "域名", dataIndex: "domain", ellipsis: true },
-    { title: "类型", dataIndex: "recordType", width: 76 },
-    { title: "来源", dataIndex: "source", width: 86, render: (value: string) => <Tag>{sourceLabels[value] ?? (value || "-")}</Tag> },
+    { title: t("history.columns.time"), dataIndex: "startedAt", width: 160, render: (value: string) => formatDate(value, language) || "-" },
+    { title: t("history.columns.domain"), dataIndex: "domain", ellipsis: true },
+    { title: t("history.columns.type"), dataIndex: "recordType", width: 76 },
+    { title: t("history.columns.source"), dataIndex: "source", width: 86, render: (value: string) => <Tag>{sourceLabels[value] ?? (value || "-")}</Tag> },
     {
-      title: "上游",
+      title: t("history.columns.upstream"),
       dataIndex: "upstreamName",
       width: 150,
       ellipsis: true,
       render: (_: string, item) => item.upstreamName ? `${item.upstreamName}${item.upstreamProtocol ? `/${item.upstreamProtocol}` : ""}` : "-"
     },
-    { title: "耗时", dataIndex: "durationMs", width: 86, render: (value: number) => `${value} ms` },
-    { title: "状态", width: 104, render: (_, item) => <HistoryStatus item={item} /> }
+    { title: t("history.columns.duration"), dataIndex: "durationMs", width: 86, render: (value: number) => `${value} ms` },
+    { title: t("history.columns.status"), width: 104, render: (_, item) => <HistoryStatus item={item} /> }
   ];
   const pageStart = total === 0 ? 0 : (page - 1) * pageSize + 1;
   const pageEnd = Math.min(page * pageSize, total);
@@ -139,7 +139,7 @@ export function HistoryPage() {
     <section className="pageWorkbench">
       <div className="workbenchToolbar">
         <div className="workbenchToolbarMain">
-          <span className="workbenchTitle">解析历史</span>
+          <span className="workbenchTitle">{t("history.title")}</span>
             <Input
               className="workbenchFluidInput"
               prefix={<SearchOutlined />}
@@ -147,16 +147,16 @@ export function HistoryPage() {
               onChange={(event) => setDomain(event.target.value)}
               placeholder="example.com"
             />
-            <FilterControl label="状态" options={statusOptions} value={statusFilter} onChange={updateStatusFilter} />
-            <FilterControl label="时间" options={windowOptions} value={historyWindow} onChange={updateWindow} />
-          <Tag>{total} 条记录</Tag>
+            <FilterControl label={t("history.status")} options={statusOptions} value={statusFilter} onChange={updateStatusFilter} />
+            <FilterControl label={t("history.time")} options={windowOptions} value={historyWindow} onChange={updateWindow} />
+          <Tag>{t("history.recordsCount", { count: total })}</Tag>
         </div>
         <div className="workbenchToolbarActions">
           <Button icon={<ReloadOutlined />} onClick={refresh} disabled={busy}>
-            刷新
+            {t("history.refresh")}
           </Button>
           <Button icon={<DeleteOutlined />} onClick={clearHistory} disabled={busy} danger>
-            清空
+            {t("history.clear")}
           </Button>
         </div>
       </div>
@@ -167,8 +167,8 @@ export function HistoryPage() {
 
           <div className="workbenchPanel">
             <div className="workbenchPanelHeader">
-              <span className="workbenchPanelTitle">解析明细</span>
-              <Typography.Text type="secondary">{total ? `${pageStart}-${pageEnd} / ${total}` : "0 条"}</Typography.Text>
+              <span className="workbenchPanelTitle">{t("history.details")}</span>
+              <Typography.Text type="secondary">{total ? `${pageStart}-${pageEnd} / ${total}` : t("history.zeroRecords")}</Typography.Text>
             </div>
             <div className="workbenchPanelBodyFlush">
           <Table
@@ -184,7 +184,7 @@ export function HistoryPage() {
               pageSizeOptions: historyPageSizeOptions,
               showSizeChanger: true,
               showLessItems: true,
-              showTotal: (value) => `共 ${value} 条`,
+              showTotal: (value) => t("history.total", { count: value }),
               onChange: updatePage
             }}
             expandable={{
@@ -194,14 +194,14 @@ export function HistoryPage() {
                   column={4}
                   items={[
                     { key: "ttl", label: "TTL", children: Number.isFinite(item.minTtl) ? `${item.minTtl} s` : "-" },
-                    { key: "attempts", label: "尝试", children: item.attemptCount },
-                    { key: "route", label: "路由", children: item.routeId > 0 ? `#${item.routeId}` : "默认" },
-                    { key: "error", label: "错误", children: item.error || "-" }
+                    { key: "attempts", label: t("history.detail.attempts"), children: item.attemptCount },
+                    { key: "route", label: t("history.detail.route"), children: item.routeId > 0 ? `#${item.routeId}` : t("history.detail.defaultRoute") },
+                    { key: "error", label: t("history.detail.error"), children: historyErrorText(item, t) || "-" }
                   ]}
                 />
               )
             }}
-            locale={{ emptyText: busy ? "正在加载解析历史。" : "没有符合筛选条件的解析历史。" }}
+            locale={{ emptyText: busy ? t("history.loading") : t("history.emptyFiltered") }}
           />
             </div>
           </div>
@@ -209,17 +209,17 @@ export function HistoryPage() {
 
         <aside className="workbenchInspector">
           <div className="workbenchInspectorSection">
-            <div className="workbenchInspectorTitle">Top 域名</div>
+            <div className="workbenchInspectorTitle">{t("history.topDomains")}</div>
           <List
             size="small"
             dataSource={topDomains}
-            locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无 Top 域名" /> }}
+            locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t("history.noTopDomains")} /> }}
             renderItem={(item, index) => (
               <List.Item onClick={() => setDomain(item.domain)} style={{ cursor: "pointer" }} extra={<Typography.Text strong>{item.count}</Typography.Text>}>
                 <List.Item.Meta
                   avatar={<Tag>{index + 1}</Tag>}
                   title={item.domain}
-                  description={`最近 ${formatDate(item.lastSeenAt) || "-"} · 平均 ${Math.round(item.averageDurationMs)} ms`}
+                  description={t("history.recentAverage", { time: formatDate(item.lastSeenAt, language) || "-", duration: Math.round(item.averageDurationMs) })}
                 />
               </List.Item>
             )}
@@ -251,16 +251,21 @@ function FilterControl<T extends string>({
 }
 
 function HistoryStatus({ item }: { item: DnsHistoryEntry }) {
-  const status = historyStatus(item);
+  const { t } = useTranslation();
+  const status = historyStatus(item, t);
   return <Tag color={status.color}>{status.label}</Tag>;
 }
 
-function historyStatus(item: DnsHistoryEntry): { color: string; label: string } {
+function historyStatus(item: DnsHistoryEntry, t: (key: string, values?: Record<string, unknown>) => string): { color: string; label: string } {
   if (item.source === "error" || item.responseCode === "SERVFAIL" || item.responseCode === "REFUSED" || item.responseCode === "INVALID") {
-    return { color: "error", label: "失败" };
+    return { color: "error", label: t("history.result.failed") };
   }
   if (item.responseCode === "NXDOMAIN" || item.error) {
-    return { color: "warning", label: "无记录" };
+    return { color: "warning", label: t("history.result.noRecord") };
   }
-  return { color: "success", label: "成功" };
+  return { color: "success", label: t("history.result.success") };
+}
+
+function historyErrorText(item: DnsHistoryEntry, translate: (key: string, values?: Record<string, unknown>) => string): string {
+  return item.errorMessage ? localizedMessageText(item.errorMessage, translate) : item.error;
 }

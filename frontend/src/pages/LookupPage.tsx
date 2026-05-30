@@ -1,6 +1,7 @@
 import { Alert, Button, Empty, Form, Input, List, Select, Space, Tag, Typography } from "antd";
 import { SearchOutlined } from "@ant-design/icons";
 import { useState } from "react";
+import { useTranslation } from "react-i18next";
 
 import { lookupDomain } from "../shared/api";
 import { errorMessage } from "../shared/format";
@@ -24,6 +25,7 @@ const recordTypeOptions: SelectOption[] = [
 ];
 
 export function LookupPage({ running }: { running: boolean }) {
+  const { t } = useTranslation();
   const [domain, setDomain] = useState("");
   const [recordType, setRecordType] = useState("A");
   const [busy, setBusy] = useState(false);
@@ -40,7 +42,7 @@ export function LookupPage({ running }: { running: boolean }) {
       setResult(await lookupDomain(domain.trim(), recordType));
     } catch (err) {
       setResult(null);
-      setError(errorMessage(err));
+      setError(errorMessage(err, (key, values) => t(key, values)));
     } finally {
       setBusy(false);
     }
@@ -55,29 +57,29 @@ export function LookupPage({ running }: { running: boolean }) {
             value={recordType}
             onChange={setRecordType}
             options={recordTypeOptions}
-            aria-label="记录类型"
+            aria-label={t("lookup.recordTypeLabel")}
           />
           <Input
             className="lookupDomainInput"
             value={domain}
             onChange={(event) => setDomain(event.target.value)}
             placeholder="example.com"
-            aria-label="查询域名"
+            aria-label={t("lookup.domainLabel")}
           />
           <Button className="lookupSearchButton" type="primary" htmlType="submit" icon={<SearchOutlined />} loading={busy} disabled={!running || !domain.trim()}>
-            查询
+            {t("lookup.query")}
           </Button>
         </Space.Compact>
       </Form>
 
       <div className="lookupBody">
         <main className="workbenchMain">
-          {error ? <Alert type="error" showIcon title="查询失败" description={error} style={{ marginBottom: 12 }} /> : null}
+          {error ? <Alert type="error" showIcon title={t("lookup.failed")} description={error} style={{ marginBottom: 12 }} /> : null}
           <div className="workbenchPanel">
             <div className="workbenchPanelHeader">
-              <span className="workbenchPanelTitle">答案记录</span>
+              <span className="workbenchPanelTitle">{t("lookup.answers")}</span>
               <Space>
-                <Tag>{result ? `${result.answerCount} 条答案` : "等待查询"}</Tag>
+                <Tag>{result ? t("lookup.answerCount", { count: result.answerCount }) : t("lookup.waiting")}</Tag>
                 {result ? <Tag color={result.responseCode === "NOERROR" ? "success" : "warning"}>{result.responseCode}</Tag> : null}
               </Space>
             </div>
@@ -86,7 +88,7 @@ export function LookupPage({ running }: { running: boolean }) {
                 className="lookupAnswerList"
                 rowKey={(record) => `${record.name}-${record.recordType}-${record.ttl}-${record.value}`}
                 dataSource={result?.records ?? []}
-                locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={result ? "没有返回答案记录" : "输入域名后执行查询"} /> }}
+                locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={result ? t("lookup.emptyAfterQuery") : t("lookup.emptyBeforeQuery")} /> }}
                 renderItem={(record) => (
                   <List.Item className="lookupAnswerItem" extra={<Tag>{record.ttl} s</Tag>}>
                     <List.Item.Meta
@@ -97,7 +99,7 @@ export function LookupPage({ running }: { running: boolean }) {
                   </List.Item>
                 )}
               />
-              {busy ? <LoadingOverlay compact text="正在查询 DNS 记录" /> : null}
+              {busy ? <LoadingOverlay compact text={t("lookup.loading")} /> : null}
             </div>
           </div>
         </main>
