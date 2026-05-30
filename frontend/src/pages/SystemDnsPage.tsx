@@ -25,7 +25,8 @@ export function SystemDnsPage({
 }: SystemDnsPageProps) {
   const [dnsConfirm, setDnsConfirm] = useState<"apply" | "restore" | null>(null);
   const systemDnsEnabled = systemDns?.settings.enabled ?? false;
-  const canManageSystemDns = Boolean(systemDns?.supported && running);
+  const canManageSystemDns = Boolean(systemDns?.supported && systemDns?.canApply && running);
+  const canRestoreSystemDns = Boolean(systemDns?.supported && running);
   const targetServers = systemDns?.settings.targetServers.length ? systemDns.settings.targetServers : systemDns?.localServers ?? [];
   const selectedAdapterIds = new Set(systemDns?.settings.selectedAdapterIds ?? []);
   const selectedAdapters = (systemDns?.adapters ?? []).filter((adapter) => selectedAdapterIds.has(adapter.id));
@@ -76,7 +77,7 @@ export function SystemDnsPage({
           </div>
           <div className="workbenchToolbarActions">
             <Switch checkedChildren="允许" unCheckedChildren="关闭" checked={systemDnsEnabled} onChange={(checked) => updateSystemDns({ enabled: checked })} disabled={!canManageSystemDns} />
-            <Button onClick={() => setDnsConfirm("restore")} disabled={loading || !adaptersLoaded || !systemDns?.supported || (!managedAdapters.length && !selectedAdapters.length)}>
+            <Button onClick={() => setDnsConfirm("restore")} disabled={loading || !adaptersLoaded || !canRestoreSystemDns || (!managedAdapters.length && !selectedAdapters.length)}>
               恢复原 DNS
             </Button>
             <Button type="primary" onClick={() => setDnsConfirm("apply")} disabled={loading || !adaptersLoaded || !canManageSystemDns || !systemDnsEnabled || !systemDns?.settings.selectedAdapterIds.length}>
@@ -187,7 +188,7 @@ export function SystemDnsPage({
         title={dnsConfirm === "apply" ? "接管系统 DNS" : "恢复系统 DNS"}
         okText="确认执行"
         cancelText="取消"
-        okButtonProps={{ disabled: loading || !adaptersLoaded || !confirmAdapters.length || (dnsConfirm === "apply" && !running) }}
+        okButtonProps={{ disabled: loading || !adaptersLoaded || !confirmAdapters.length || (dnsConfirm === "apply" && !canManageSystemDns) || (dnsConfirm === "restore" && !canRestoreSystemDns) }}
         onOk={confirmSystemDnsAction}
         onCancel={() => setDnsConfirm(null)}
       >

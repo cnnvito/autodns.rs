@@ -24,6 +24,7 @@ use std::collections::{HashMap, HashSet};
 use std::error::Error as StdError;
 use std::fs::File;
 use std::io::BufReader;
+use std::io::ErrorKind;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
@@ -387,7 +388,7 @@ pub async fn start_runtime(
         "udp" => {
             let socket = UdpSocket::bind(&cfg.server.listen)
                 .await
-                .with_context(|| format!("bind udp listener: {}", cfg.server.listen))?;
+                .map_err(|err| listener_bind_error("UDP", &cfg.server.listen, err))?;
             tokio::spawn(run_udp_listener(
                 cfg.server.listen.clone(),
                 socket,
@@ -400,7 +401,7 @@ pub async fn start_runtime(
         "tcp" => {
             let listener = TcpListener::bind(&cfg.server.listen)
                 .await
-                .with_context(|| format!("bind tcp listener: {}", cfg.server.listen))?;
+                .map_err(|err| listener_bind_error("TCP", &cfg.server.listen, err))?;
             tokio::spawn(run_tcp_listener(
                 cfg.server.listen.clone(),
                 listener,
@@ -414,7 +415,7 @@ pub async fn start_runtime(
             let tls = load_server_tls(&cfg.server.cert_file, &cfg.server.key_file)?;
             let listener = TcpListener::bind(&cfg.server.listen)
                 .await
-                .with_context(|| format!("bind dot listener: {}", cfg.server.listen))?;
+                .map_err(|err| listener_bind_error("DoT", &cfg.server.listen, err))?;
             tokio::spawn(run_dot_listener(
                 cfg.server.listen.clone(),
                 listener,
@@ -429,7 +430,7 @@ pub async fn start_runtime(
             let tls = load_server_tls(&cfg.server.cert_file, &cfg.server.key_file)?;
             let listener = TcpListener::bind(&cfg.server.listen)
                 .await
-                .with_context(|| format!("bind doh listener: {}", cfg.server.listen))?;
+                .map_err(|err| listener_bind_error("DoH", &cfg.server.listen, err))?;
             tokio::spawn(run_doh_listener(
                 cfg.server.listen.clone(),
                 listener,
@@ -452,6 +453,18 @@ pub async fn start_runtime(
         listener,
         health_tasks,
     })
+}
+
+fn listener_bind_error(protocol: &str, listen: &str, err: std::io::Error) -> anyhow::Error {
+    match err.kind() {
+        ErrorKind::AddrInUse => anyhow!(
+            "{protocol} 监听地址 {listen} 已被占用。请停止占用该端口的程序，或在偏好设置里更换监听端口。"
+        ),
+        ErrorKind::PermissionDenied => anyhow!(
+            "{protocol} 监听地址 {listen} 权限不足。监听 53 等低端口通常需要管理员权限。"
+        ),
+        _ => anyhow!("{protocol} 监听地址 {listen} 绑定失败: {err}"),
+    }
 }
 
 fn spawn_health_tasks(
@@ -3409,6 +3422,33 @@ fn normalize_domain_lossy(domain: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io;
+
+    #[test]
+    fn listener_bind_error_explains_port_conflict() {
+        let err = listener_bind_error(
+            "UDP",
+            "127.0.0.1:53",
+            io::Error::from(ErrorKind::AddrInUse),
+        )
+        .to_string();
+
+        assert!(err.contains("已被占用"));
+        assert!(err.contains("127.0.0.1:53"));
+    }
+
+    #[test]
+    fn listener_bind_error_explains_privileged_port_permission() {
+        let err = listener_bind_error(
+            "UDP",
+            "127.0.0.1:53",
+            io::Error::from(ErrorKind::PermissionDenied),
+        )
+        .to_string();
+
+        assert!(err.contains("权限不足"));
+        assert!(err.contains("管理员权限"));
+    }
 
     #[test]
     fn socks5_udp_packet_wraps_domain_target() {

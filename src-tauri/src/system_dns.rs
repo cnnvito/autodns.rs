@@ -4,7 +4,7 @@ use anyhow::{anyhow, Context, Result};
 #[cfg(any(test, target_os = "windows"))]
 use serde::Deserialize;
 use std::collections::HashSet;
-use std::net::SocketAddr;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 #[cfg(any(target_os = "windows", target_os = "macos"))]
 use std::process::Command;
 #[cfg(target_os = "windows")]
@@ -17,8 +17,9 @@ pub fn status_from_adapters(
     last_error: Option<String>,
 ) -> Result<SystemDnsStatus> {
     let mut settings = store.load_system_dns_settings()?;
-    let local_servers = local_dns_servers(listen);
-    if settings.target_servers.is_empty() {
+    let listener_targets = listener_dns_targets(listen);
+    let local_servers = listener_targets.servers.clone();
+    if settings.target_servers.is_empty() || target_servers_match_listener(listen, &settings.target_servers) {
         settings.target_servers = local_servers.clone();
     }
 
@@ -50,11 +51,18 @@ pub fn status_from_adapters(
     if settings.enabled && settings.selected_adapter_ids.is_empty() {
         warnings.push("系统 DNS 接管已开启，但还没有选择任何网络接口。".to_string());
     }
+    if !listener_targets.can_apply {
+        warnings.push(listener_targets.warning.unwrap_or_else(|| {
+            format!("当前监听地址为 {listen}，系统 DNS 接管需要可用的本机 53 端口监听地址。")
+        }));
+    }
+
+    let supported = platform_supported();
 
     Ok(SystemDnsStatus {
         platform: std::env::consts::OS.to_string(),
-        supported: platform_supported(),
-        can_apply: platform_supported(),
+        supported,
+        can_apply: supported && listener_targets.can_apply,
         settings,
         local_servers,
         adapters,
@@ -148,16 +156,53 @@ pub fn restore(store: &ConfigStore, adapters: &mut [SystemDnsAdapter]) -> Result
     Ok(())
 }
 
-fn local_dns_servers(listen: &str) -> Vec<String> {
-    if let Ok(addr) = listen.parse::<SocketAddr>() {
-        return vec![addr.ip().to_string()];
+#[derive(Debug, Default, PartialEq, Eq)]
+struct ListenerDnsTargets {
+    servers: Vec<String>,
+    can_apply: bool,
+    warning: Option<String>,
+}
+
+fn listener_dns_targets(listen: &str) -> ListenerDnsTargets {
+    let Ok(addr) = listen.parse::<SocketAddr>() else {
+        return ListenerDnsTargets {
+            servers: Vec::new(),
+            can_apply: false,
+            warning: Some(format!(
+                "当前监听地址 {listen} 不是完整的 IP:端口 格式，无法用于系统 DNS 接管。"
+            )),
+        };
+    };
+    if addr.port() != 53 {
+        return ListenerDnsTargets {
+            servers: vec![dns_server_ip_for_listener(addr.ip())],
+            can_apply: false,
+            warning: Some(format!(
+                "当前监听地址为 {listen}，系统 DNS 只能配置服务器 IP，无法指定端口。要接管系统 DNS，请将监听端口改为 53。"
+            )),
+        };
     }
-    listen
-        .split_once(':')
-        .map(|(host, _)| host.trim().to_string())
-        .filter(|host| !host.is_empty())
-        .map(|host| vec![host])
-        .unwrap_or_default()
+
+    ListenerDnsTargets {
+        servers: vec![dns_server_ip_for_listener(addr.ip())],
+        can_apply: true,
+        warning: None,
+    }
+}
+
+fn target_servers_match_listener(listen: &str, servers: &[String]) -> bool {
+    let Ok(addr) = listen.parse::<SocketAddr>() else {
+        return false;
+    };
+    servers.len() == 1 && servers[0].trim() == addr.ip().to_string()
+}
+
+fn dns_server_ip_for_listener(ip: IpAddr) -> String {
+    match ip {
+        IpAddr::V4(ip) if ip == Ipv4Addr::UNSPECIFIED => Ipv4Addr::LOCALHOST.to_string(),
+        IpAddr::V6(ip) if ip == Ipv6Addr::UNSPECIFIED => Ipv6Addr::LOCALHOST.to_string(),
+        _ => ip.to_string(),
+    }
 }
 
 fn platform_supported() -> bool {
@@ -239,6 +284,83 @@ fn virtual_adapter(name: &str, description: &str) -> bool {
     ]
     .iter()
     .any(|needle| text.contains(needle))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn listener_dns_targets_accepts_explicit_loopback_addresses_on_port_53() {
+        assert_eq!(
+            listener_dns_targets("127.0.0.1:53"),
+            ListenerDnsTargets {
+                servers: vec!["127.0.0.1".to_string()],
+                can_apply: true,
+                warning: None,
+            }
+        );
+        assert_eq!(
+            listener_dns_targets("127.0.0.53:53"),
+            ListenerDnsTargets {
+                servers: vec!["127.0.0.53".to_string()],
+                can_apply: true,
+                warning: None,
+            }
+        );
+        assert_eq!(
+            listener_dns_targets("[::1]:53"),
+            ListenerDnsTargets {
+                servers: vec!["::1".to_string()],
+                can_apply: true,
+                warning: None,
+            }
+        );
+    }
+
+    #[test]
+    fn listener_dns_targets_map_unspecified_listeners_to_loopback_targets() {
+        assert_eq!(
+            listener_dns_targets("0.0.0.0:53"),
+            ListenerDnsTargets {
+                servers: vec!["127.0.0.1".to_string()],
+                can_apply: true,
+                warning: None,
+            }
+        );
+        assert_eq!(
+            listener_dns_targets("[::]:53"),
+            ListenerDnsTargets {
+                servers: vec!["::1".to_string()],
+                can_apply: true,
+                warning: None,
+            }
+        );
+    }
+
+    #[test]
+    fn listener_dns_targets_rejects_non_standard_or_invalid_listener() {
+        let non_standard = listener_dns_targets("127.0.0.1:15453");
+        assert_eq!(non_standard.servers, vec!["127.0.0.1"]);
+        assert!(!non_standard.can_apply);
+        assert!(non_standard.warning.unwrap().contains("53"));
+
+        let invalid = listener_dns_targets("127.0.0.1");
+        assert!(invalid.servers.is_empty());
+        assert!(!invalid.can_apply);
+        assert!(invalid.warning.unwrap().contains("IP:端口"));
+    }
+
+    #[test]
+    fn target_servers_match_only_listener_derived_single_ip() {
+        assert!(target_servers_match_listener("0.0.0.0:53", &["0.0.0.0".to_string()]));
+        assert!(!target_servers_match_listener("0.0.0.0:53", &["127.0.0.1".to_string()]));
+        assert!(!target_servers_match_listener(
+            "0.0.0.0:53",
+            &["0.0.0.0".to_string(), "127.0.0.1".to_string()]
+        ));
+        assert!(!target_servers_match_listener("127.0.0.1", &["127.0.0.1".to_string()]));
+    }
 }
 
 #[cfg(any(test, target_os = "windows"))]
