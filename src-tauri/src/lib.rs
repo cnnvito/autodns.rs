@@ -11,17 +11,18 @@ mod store;
 mod system_dns;
 
 use commands::*;
+use desktop::DesktopWindowState;
 use service::DesktopService;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
-    Arc,
+    Arc, Mutex,
 };
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tauri::{
     image::Image,
     menu::{Menu, MenuItem, PredefinedMenuItem},
     tray::{MouseButton, TrayIcon, TrayIconBuilder, TrayIconEvent},
-    Emitter, Manager, WindowEvent, Wry,
+    Emitter, Manager, PhysicalPosition, PhysicalSize, WindowEvent, Wry,
 };
 
 const TRAY_SHOW: &str = "show";
@@ -45,6 +46,11 @@ pub(crate) struct WindowReadyState {
     ready: AtomicBool,
 }
 
+#[derive(Default)]
+struct WindowStateSaveThrottle {
+    last_saved_at: Mutex<Option<Instant>>,
+}
+
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
@@ -53,6 +59,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .manage(DesktopService::new())
         .manage(WindowReadyState::default())
+        .manage(WindowStateSaveThrottle::default())
         .setup(|app| {
             let app_handle = app.handle().clone();
             let pending_status_emit = Arc::new(AtomicBool::new(false));
@@ -79,7 +86,15 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| {
+            match event {
+                WindowEvent::Resized(_) | WindowEvent::Moved(_) => {
+                    schedule_window_state_save(window);
+                }
+                _ => {}
+            }
+
             if let WindowEvent::CloseRequested { api, .. } = event {
+                save_window_state(window);
                 let service = window.state::<DesktopService>();
                 if service.allow_quit() {
                     return;
@@ -288,10 +303,62 @@ pub(crate) fn reveal_main_window(app: &tauri::AppHandle) -> tauri::Result<()> {
         .ready
         .store(true, Ordering::SeqCst);
     if let Some(window) = app.get_webview_window("main") {
+        restore_window_state(&window);
         window.show()?;
         window.set_focus()?;
     }
     Ok(())
+}
+
+fn schedule_window_state_save(window: &tauri::Window) {
+    let throttle = window.state::<WindowStateSaveThrottle>();
+    let now = Instant::now();
+    let mut last_saved_at = match throttle.last_saved_at.lock() {
+        Ok(guard) => guard,
+        Err(_) => return,
+    };
+    if last_saved_at
+        .map(|last| now.duration_since(last) < Duration::from_millis(500))
+        .unwrap_or(false)
+    {
+        return;
+    }
+    *last_saved_at = Some(now);
+    drop(last_saved_at);
+    save_window_state(window);
+}
+
+fn save_window_state(window: &tauri::Window) {
+    let size = match window.inner_size() {
+        Ok(size) => size,
+        Err(_) => return,
+    };
+    let position = window.outer_position().ok();
+    let maximized = window.is_maximized().unwrap_or(false);
+    let state = DesktopWindowState {
+        width: size.width,
+        height: size.height,
+        x: position.map(|position| position.x),
+        y: position.map(|position| position.y),
+        maximized,
+    };
+    let _ = preferences::save_window_state(state);
+}
+
+fn restore_window_state(window: &tauri::WebviewWindow) {
+    let Some(state) = preferences::saved_window_state() else {
+        return;
+    };
+    if window.is_maximized().unwrap_or(false) {
+        let _ = window.unmaximize();
+    }
+    if let (Some(x), Some(y)) = (state.x, state.y) {
+        let _ = window.set_position(PhysicalPosition::new(x, y));
+    }
+    let _ = window.set_size(PhysicalSize::new(state.width, state.height));
+    if state.maximized {
+        let _ = window.maximize();
+    }
 }
 
 fn schedule_desktop_status(app: tauri::AppHandle, pending: Arc<AtomicBool>) {

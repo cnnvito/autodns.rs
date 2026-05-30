@@ -275,6 +275,21 @@ pub struct DesktopPreferences {
     pub start_at_login_supported: bool,
     pub tray_supported: bool,
     pub tray_message: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window: Option<DesktopWindowState>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DesktopWindowState {
+    pub width: u32,
+    pub height: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub x: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub y: Option<i32>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub maximized: bool,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]

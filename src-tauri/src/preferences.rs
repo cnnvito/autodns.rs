@@ -1,5 +1,5 @@
 use crate::{config::desktop_config_dir, environment};
-use crate::desktop::DesktopPreferences;
+use crate::desktop::{DesktopPreferences, DesktopWindowState};
 #[cfg(not(target_os = "windows"))]
 use anyhow::anyhow;
 use anyhow::{Context, Result};
@@ -9,6 +9,11 @@ use std::path::PathBuf;
 pub const CLOSE_BEHAVIOR_ASK: &str = "ask";
 pub const CLOSE_BEHAVIOR_HIDE: &str = "hide";
 pub const CLOSE_BEHAVIOR_QUIT: &str = "quit";
+
+const MIN_WINDOW_WIDTH: u32 = 900;
+const MIN_WINDOW_HEIGHT: u32 = 620;
+const MAX_WINDOW_WIDTH: u32 = 3840;
+const MAX_WINDOW_HEIGHT: u32 = 2160;
 
 pub fn load_desktop_preferences() -> Result<DesktopPreferences> {
     let mut prefs = default_desktop_preferences();
@@ -30,6 +35,9 @@ pub fn load_desktop_preferences() -> Result<DesktopPreferences> {
 pub fn save_desktop_preferences(prefs: DesktopPreferences) -> Result<DesktopPreferences> {
     let current = load_desktop_preferences().unwrap_or_else(|_| default_desktop_preferences());
     let mut next = normalize_desktop_preferences(prefs);
+    if next.window.is_none() {
+        next.window = current.window;
+    }
     next.start_at_login_supported = current.start_at_login_supported;
     next.tray_supported = current.tray_supported;
     next.tray_message = current.tray_message;
@@ -37,12 +45,7 @@ pub fn save_desktop_preferences(prefs: DesktopPreferences) -> Result<DesktopPref
     set_start_at_login(next.start_at_login)?;
     next.start_at_login = start_at_login_enabled().unwrap_or(next.start_at_login);
 
-    let path = desktop_preferences_path()?;
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).context("create preferences directory")?;
-    }
-    let data = serde_json::to_vec_pretty(&next).context("marshal desktop preferences")?;
-    fs::write(&path, data).context("write desktop preferences")?;
+    write_desktop_preferences(&next)?;
     Ok(next)
 }
 
@@ -53,6 +56,7 @@ fn default_desktop_preferences() -> DesktopPreferences {
         start_at_login_supported: start_at_login_supported(),
         tray_supported: true,
         tray_message: "Tauri desktop keeps close-to-hide behavior in this port.".into(),
+        window: None,
     }
 }
 
@@ -65,7 +69,37 @@ fn normalize_desktop_preferences(mut prefs: DesktopPreferences) -> DesktopPrefer
     prefs.start_at_login_supported = defaults.start_at_login_supported;
     prefs.tray_supported = defaults.tray_supported;
     prefs.tray_message = defaults.tray_message;
+    prefs.window = prefs.window.and_then(normalize_window_state);
     prefs
+}
+
+pub fn saved_window_state() -> Option<DesktopWindowState> {
+    load_desktop_preferences().ok()?.window
+}
+
+pub fn save_window_state(window: DesktopWindowState) -> Result<()> {
+    let mut prefs = load_desktop_preferences().unwrap_or_else(|_| default_desktop_preferences());
+    prefs.window = normalize_window_state(window);
+    write_desktop_preferences(&prefs)
+}
+
+fn write_desktop_preferences(prefs: &DesktopPreferences) -> Result<()> {
+    let path = desktop_preferences_path()?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).context("create preferences directory")?;
+    }
+    let data = serde_json::to_vec_pretty(prefs).context("marshal desktop preferences")?;
+    fs::write(&path, data).context("write desktop preferences")?;
+    Ok(())
+}
+
+fn normalize_window_state(mut window: DesktopWindowState) -> Option<DesktopWindowState> {
+    if window.width < MIN_WINDOW_WIDTH / 2 || window.height < MIN_WINDOW_HEIGHT / 2 {
+        return None;
+    }
+    window.width = window.width.clamp(MIN_WINDOW_WIDTH, MAX_WINDOW_WIDTH);
+    window.height = window.height.clamp(MIN_WINDOW_HEIGHT, MAX_WINDOW_HEIGHT);
+    Some(window)
 }
 
 fn desktop_preferences_path() -> Result<PathBuf> {
@@ -250,5 +284,53 @@ fn platform_set_start_at_login(enabled: bool) -> Result<()> {
         Err(anyhow!("start at login is not supported on this platform"))
     } else {
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normalize_preferences_accepts_missing_window_state() {
+        let mut prefs = default_desktop_preferences();
+        prefs.close_behavior = "invalid".into();
+        prefs.window = None;
+
+        let normalized = normalize_desktop_preferences(prefs);
+
+        assert_eq!(normalized.close_behavior, CLOSE_BEHAVIOR_ASK);
+        assert!(normalized.window.is_none());
+    }
+
+    #[test]
+    fn normalize_window_state_clamps_reasonable_saved_size() {
+        let state = normalize_window_state(DesktopWindowState {
+            width: 640,
+            height: 480,
+            x: Some(40),
+            y: Some(80),
+            maximized: true,
+        })
+        .expect("window state should be retained");
+
+        assert_eq!(state.width, MIN_WINDOW_WIDTH);
+        assert_eq!(state.height, MIN_WINDOW_HEIGHT);
+        assert_eq!(state.x, Some(40));
+        assert_eq!(state.y, Some(80));
+        assert!(state.maximized);
+    }
+
+    #[test]
+    fn normalize_window_state_rejects_tiny_saved_size() {
+        let state = normalize_window_state(DesktopWindowState {
+            width: 100,
+            height: 100,
+            x: None,
+            y: None,
+            maximized: false,
+        });
+
+        assert!(state.is_none());
     }
 }
