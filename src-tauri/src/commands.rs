@@ -30,11 +30,15 @@ fn command_error_from_message(message: &str) -> CommandError {
         "no network adapter is selected" => "systemDns.noAdapterSelected",
         "target DNS server is empty" => "systemDns.emptyTargetServer",
         _ => {
-            if let Some((protocol, listen)) = parse_listener_error(message, " listen address ", " is already in use") {
+            if let Some((protocol, listen)) =
+                parse_listener_error(message, " listen address ", " is already in use")
+            {
                 values.insert("protocol".to_string(), protocol);
                 values.insert("listen".to_string(), listen);
                 "dns.listenerAddressInUse"
-            } else if let Some((protocol, listen)) = parse_listener_error(message, " listen address ", " permission denied") {
+            } else if let Some((protocol, listen)) =
+                parse_listener_error(message, " listen address ", " permission denied")
+            {
                 values.insert("protocol".to_string(), protocol);
                 values.insert("listen".to_string(), listen);
                 "dns.listenerPermissionDenied"
@@ -213,7 +217,10 @@ pub fn load_preferences() -> Result<DesktopPreferences, CommandError> {
 }
 
 #[tauri::command]
-pub fn save_preferences(app: AppHandle, prefs: DesktopPreferences) -> Result<DesktopPreferences, CommandError> {
+pub fn save_preferences(
+    app: AppHandle,
+    prefs: DesktopPreferences,
+) -> Result<DesktopPreferences, CommandError> {
     let saved = preferences::save_desktop_preferences(prefs).map_err(to_command_error)?;
     crate::refresh_tray_state(&app);
     Ok(saved)

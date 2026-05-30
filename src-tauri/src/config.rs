@@ -913,7 +913,10 @@ mod tests {
                 .and_then(|name| name.to_str()),
             Some("autodns-test")
         );
-        assert_eq!(path.file_name().and_then(|name| name.to_str()), Some("autodns.sqlite3"));
+        assert_eq!(
+            path.file_name().and_then(|name| name.to_str()),
+            Some("autodns.sqlite3")
+        );
     }
 
     #[test]

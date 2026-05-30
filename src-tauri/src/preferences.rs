@@ -1,5 +1,5 @@
-use crate::{config::desktop_config_dir, environment};
 use crate::desktop::{DesktopPreferences, DesktopWindowState};
+use crate::{config::desktop_config_dir, environment};
 #[cfg(not(target_os = "windows"))]
 use anyhow::anyhow;
 use anyhow::{Context, Result};

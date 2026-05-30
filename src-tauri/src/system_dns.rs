@@ -1,6 +1,5 @@
 use crate::desktop::{
-    localized_error_message, LocalizedMessage, SystemDnsAdapter, SystemDnsSettings,
-    SystemDnsStatus,
+    localized_error_message, LocalizedMessage, SystemDnsAdapter, SystemDnsSettings, SystemDnsStatus,
 };
 use crate::store::ConfigStore;
 use anyhow::{anyhow, Context, Result};
@@ -22,7 +21,9 @@ pub fn status_from_adapters(
     let mut settings = store.load_system_dns_settings()?;
     let listener_targets = listener_dns_targets(listen);
     let local_servers = listener_targets.servers.clone();
-    if settings.target_servers.is_empty() || target_servers_match_listener(listen, &settings.target_servers) {
+    if settings.target_servers.is_empty()
+        || target_servers_match_listener(listen, &settings.target_servers)
+    {
         settings.target_servers = local_servers.clone();
     }
 
@@ -38,10 +39,7 @@ pub fn status_from_adapters(
         adapter.last_applied_at = saved.last_applied_at;
         adapter.last_restored_at = saved.last_restored_at;
         adapter.last_error = saved.last_error;
-        adapter.last_error_message = adapter
-            .last_error
-            .as_deref()
-            .map(localized_error_message);
+        adapter.last_error_message = adapter.last_error.as_deref().map(localized_error_message);
     }
 
     let active_count = adapters
@@ -401,7 +399,10 @@ mod tests {
         assert!(!non_standard.can_apply);
         let warning = non_standard.warning.unwrap();
         assert_eq!(warning.code, "systemDns.warning.listenPortNot53");
-        assert_eq!(warning.values.get("listen"), Some(&"127.0.0.1:15453".to_string()));
+        assert_eq!(
+            warning.values.get("listen"),
+            Some(&"127.0.0.1:15453".to_string())
+        );
 
         let invalid = listener_dns_targets("127.0.0.1");
         assert!(invalid.servers.is_empty());
@@ -414,13 +415,22 @@ mod tests {
 
     #[test]
     fn target_servers_match_only_listener_derived_single_ip() {
-        assert!(target_servers_match_listener("0.0.0.0:53", &["0.0.0.0".to_string()]));
-        assert!(!target_servers_match_listener("0.0.0.0:53", &["127.0.0.1".to_string()]));
+        assert!(target_servers_match_listener(
+            "0.0.0.0:53",
+            &["0.0.0.0".to_string()]
+        ));
+        assert!(!target_servers_match_listener(
+            "0.0.0.0:53",
+            &["127.0.0.1".to_string()]
+        ));
         assert!(!target_servers_match_listener(
             "0.0.0.0:53",
             &["0.0.0.0".to_string(), "127.0.0.1".to_string()]
         ));
-        assert!(!target_servers_match_listener("127.0.0.1", &["127.0.0.1".to_string()]));
+        assert!(!target_servers_match_listener(
+            "127.0.0.1",
+            &["127.0.0.1".to_string()]
+        ));
     }
 }
 

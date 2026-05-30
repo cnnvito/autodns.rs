@@ -11,11 +11,7 @@ pub struct LocalizedMessage {
 }
 
 impl LocalizedMessage {
-    pub fn new<const N: usize>(
-        code: &str,
-        message: &str,
-        values: [(&str, String); N],
-    ) -> Self {
+    pub fn new<const N: usize>(code: &str, message: &str, values: [(&str, String); N]) -> Self {
         Self {
             code: code.to_string(),
             message: message.to_string(),
@@ -25,16 +21,11 @@ impl LocalizedMessage {
                 .collect(),
         }
     }
-
 }
 
 pub fn localized_error_message(error: &str) -> LocalizedMessage {
     if error == "all upstreams failed" {
-        return LocalizedMessage::new(
-            "runtime.allUpstreamsFailed",
-            "All upstreams failed.",
-            [],
-        );
+        return LocalizedMessage::new("runtime.allUpstreamsFailed", "All upstreams failed.", []);
     }
     if error == "selected adapter no longer exists" {
         return LocalizedMessage::new(

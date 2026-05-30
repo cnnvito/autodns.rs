@@ -142,14 +142,36 @@ pub fn run() {
 
 fn setup_tray(app: &mut tauri::App) -> tauri::Result<()> {
     let text = tray_text();
-    let status = MenuItem::with_id(app, "tray-status", format!("{}{}", text.status_prefix, text.stopped), false, None::<&str>)?;
-    let listen = MenuItem::with_id(app, "tray-listen", format!("{}-", text.listen_prefix), false, None::<&str>)?;
+    let status = MenuItem::with_id(
+        app,
+        "tray-status",
+        format!("{}{}", text.status_prefix, text.stopped),
+        false,
+        None::<&str>,
+    )?;
+    let listen = MenuItem::with_id(
+        app,
+        "tray-listen",
+        format!("{}-", text.listen_prefix),
+        false,
+        None::<&str>,
+    )?;
     let show = MenuItem::with_id(app, TRAY_SHOW, text.show, true, None::<&str>)?;
     let hide = MenuItem::with_id(app, TRAY_HIDE, text.hide, true, None::<&str>)?;
-    let toggle_service =
-        MenuItem::with_id(app, TRAY_TOGGLE_SERVICE, text.start_service, true, None::<&str>)?;
-    let restart_service =
-        MenuItem::with_id(app, TRAY_RESTART_SERVICE, text.restart_service, false, None::<&str>)?;
+    let toggle_service = MenuItem::with_id(
+        app,
+        TRAY_TOGGLE_SERVICE,
+        text.start_service,
+        true,
+        None::<&str>,
+    )?;
+    let restart_service = MenuItem::with_id(
+        app,
+        TRAY_RESTART_SERVICE,
+        text.restart_service,
+        false,
+        None::<&str>,
+    )?;
     let clear_cache =
         MenuItem::with_id(app, TRAY_CLEAR_CACHE, text.clear_cache, false, None::<&str>)?;
     let quit = MenuItem::with_id(app, TRAY_QUIT, text.quit, true, None::<&str>)?;
@@ -277,8 +299,12 @@ pub(crate) fn refresh_tray_state(app: &tauri::AppHandle) {
     let text = tray_text();
 
     if service_status.running {
-        let _ = tray_state.status.set_text(format!("{}{}", text.status_prefix, text.running));
-        let _ = tray_state.listen.set_text(format!("{}{listen}", text.listen_prefix));
+        let _ = tray_state
+            .status
+            .set_text(format!("{}{}", text.status_prefix, text.running));
+        let _ = tray_state
+            .listen
+            .set_text(format!("{}{listen}", text.listen_prefix));
         let _ = tray_state.toggle_service.set_text(text.stop_service);
         let _ = tray_state.restart_service.set_enabled(true);
         let _ = tray_state.clear_cache.set_enabled(true);
@@ -286,8 +312,12 @@ pub(crate) fn refresh_tray_state(app: &tauri::AppHandle) {
             .tray
             .set_tooltip(Some(format!("{} · {listen}", text.running)));
     } else {
-        let _ = tray_state.status.set_text(format!("{}{}", text.status_prefix, text.stopped));
-        let _ = tray_state.listen.set_text(format!("{}-", text.listen_prefix));
+        let _ = tray_state
+            .status
+            .set_text(format!("{}{}", text.status_prefix, text.stopped));
+        let _ = tray_state
+            .listen
+            .set_text(format!("{}-", text.listen_prefix));
         let _ = tray_state.toggle_service.set_text(text.start_service);
         let _ = tray_state.restart_service.set_enabled(false);
         let _ = tray_state.clear_cache.set_enabled(false);
