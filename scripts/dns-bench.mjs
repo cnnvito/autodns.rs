@@ -7,7 +7,8 @@ const defaults = {
   domain: "example.com",
   count: 1000,
   concurrency: 50,
-  timeout: 2000
+  timeout: 2000,
+  randomPrefix: false
 };
 
 function parseArgs(argv) {
@@ -35,6 +36,8 @@ function parseArgs(argv) {
       }
     } else if (arg === "--timeout") {
       args.timeout = parsePositiveInteger(readValue(), "timeout");
+    } else if (arg === "--random-prefix") {
+      args.randomPrefix = true;
     } else if (arg === "--help" || arg === "-h") {
       printHelp();
       process.exit(0);
@@ -62,6 +65,13 @@ function parseTarget(target) {
     host: target.slice(0, splitAt),
     port: parsePositiveInteger(target.slice(splitAt + 1), "port")
   };
+}
+
+function domainForRequest(options, sequence) {
+  if (!options.randomPrefix) {
+    return options.domain;
+  }
+  return `${sequence.toString(36)}-${Math.random().toString(36).slice(2, 10)}.${options.domain}`;
 }
 
 function buildQuery(id, domain) {
@@ -102,7 +112,10 @@ async function runBench(options) {
   let nextId = Math.floor(Math.random() * 0xffff);
   const startedAt = performance.now();
 
-  await new Promise((resolve) => socket.bind(0, resolve));
+  await new Promise((resolve) => {
+    socket.once("listening", resolve);
+    socket.bind(0);
+  });
 
   return new Promise((resolve, reject) => {
     socket.on("error", reject);
@@ -128,7 +141,7 @@ async function runBench(options) {
         id = (id + 1) & 0xffff;
       }
       nextId = (id + 1) & 0xffff;
-      const packet = buildQuery(id, options.domain);
+      const packet = buildQuery(id, domainForRequest(options, sent));
       sent += 1;
       const timer = setTimeout(() => failRequest(id), options.timeout);
       pending.set(id, { startedAt: performance.now(), timer });
@@ -187,6 +200,7 @@ Options:
   --count <number>         Total queries (default: ${defaults.count})
   --concurrency <number>   In-flight queries (default: ${defaults.concurrency})
   --timeout <ms>           Per-query timeout (default: ${defaults.timeout})
+  --random-prefix          Query a unique random subdomain each time
 `);
 }
 
@@ -199,6 +213,7 @@ function printResult(options, result) {
   const qps = total / (result.elapsedMs / 1000);
   console.log(`target: ${options.target}`);
   console.log(`domain: ${options.domain}`);
+  console.log(`random_prefix: ${options.randomPrefix ? "yes" : "no"}`);
   console.log(`total: ${total}`);
   console.log(`success: ${result.succeeded}`);
   console.log(`failed: ${result.failed}`);

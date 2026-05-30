@@ -29,6 +29,7 @@ use std::fs::File;
 use std::io::BufReader;
 use std::io::ErrorKind;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::sync::atomic::{AtomicU32, AtomicU8, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 use tokio::io::{split, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadHalf, WriteHalf};
@@ -176,11 +177,53 @@ struct UpstreamClient {
     proxy: Option<ProxyEndpoint>,
     bootstrap: Option<Arc<BootstrapResolver>>,
     http: Option<reqwest::Client>,
+    state: Arc<AtomicU8>,
+    transport_failure_streak: Arc<AtomicU32>,
+    connect_gate: Arc<AsyncMutex<()>>,
+    resolve_gate: Arc<AsyncMutex<()>>,
+    failure_threshold: u32,
+    endpoint_addrs: Arc<Mutex<Option<Arc<[SocketAddr]>>>>,
     udp: Arc<Mutex<Option<Arc<UdpUpstreamClient>>>>,
     socks5_udp: Arc<Mutex<Option<Arc<Socks5UdpUpstreamClient>>>>,
     tcp: Arc<Mutex<Option<Arc<LenPrefixedUpstreamClient>>>>,
     dot: Arc<Mutex<Option<Arc<LenPrefixedUpstreamClient>>>>,
     doq: Arc<Mutex<Option<Arc<DoqUpstreamClient>>>>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum UpstreamPoolState {
+    Ready = 0,
+    Cold = 1,
+    Connecting = 2,
+    Degraded = 3,
+    Recovering = 4,
+}
+
+impl UpstreamPoolState {
+    fn from_u8(value: u8) -> Self {
+        match value {
+            0 => Self::Ready,
+            2 => Self::Connecting,
+            3 => Self::Degraded,
+            4 => Self::Recovering,
+            _ => Self::Cold,
+        }
+    }
+}
+
+#[derive(Debug)]
+struct UpstreamConnecting;
+
+impl std::fmt::Display for UpstreamConnecting {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("upstream connection is already being established")
+    }
+}
+
+impl StdError for UpstreamConnecting {}
+
+fn is_upstream_connecting_error(err: &anyhow::Error) -> bool {
+    err.downcast_ref::<UpstreamConnecting>().is_some()
 }
 
 #[derive(Clone)]
@@ -574,6 +617,12 @@ fn build_resolver(
                 proxy,
                 bootstrap,
                 http,
+                state: Arc::new(AtomicU8::new(UpstreamPoolState::Cold as u8)),
+                transport_failure_streak: Arc::new(AtomicU32::new(0)),
+                connect_gate: Arc::new(AsyncMutex::new(())),
+                resolve_gate: Arc::new(AsyncMutex::new(())),
+                failure_threshold: cfg.healthcheck.failure_threshold.max(1),
+                endpoint_addrs: Arc::new(Mutex::new(None)),
                 udp: Arc::new(Mutex::new(None)),
                 socks5_udp: Arc::new(Mutex::new(None)),
                 tcp: Arc::new(Mutex::new(None)),
@@ -1212,23 +1261,15 @@ impl Resolver {
         // still have an answer for split-horizon, geo, or policy-routed domains. Keep the
         // latest negative as a fallback and only return it after every selected upstream
         // has failed to produce an answer.
-        let health = self.health.snapshot();
-        let healthy_selected = selected
-            .iter()
-            .any(|name| !health.should_skip_for_query(name));
+        let healthy_selected = selected.iter().any(|name| {
+            self.clients
+                .get(name)
+                .is_some_and(|client| !client.should_skip_for_query())
+        });
         let mut last_negative = None;
         let mut attempt_count = 0usize;
         let mut last_error = None;
         for name in selected.iter() {
-            if healthy_selected && health.should_skip_for_query(name) {
-                if debug_logs {
-                    self.logs.push(
-                        "debug",
-                        format!("dns query {qname} {qtype} route {route_id} skipped degraded upstream {name}"),
-                    );
-                }
-                continue;
-            }
             let Some(client) = self.clients.get(name) else {
                 if debug_logs {
                     self.logs.push(
@@ -1238,6 +1279,15 @@ impl Resolver {
                 }
                 continue;
             };
+            if healthy_selected && client.should_skip_for_query() {
+                if debug_logs {
+                    self.logs.push(
+                        "debug",
+                        format!("dns query {qname} {qtype} route {route_id} skipped busy or degraded upstream {name}"),
+                    );
+                }
+                continue;
+            }
             attempt_count += 1;
             let started = Instant::now();
             if debug_logs {
@@ -1339,6 +1389,7 @@ impl Resolver {
                 }
                 Err(err) => {
                     last_error = Some(err.to_string());
+                    let connecting = is_upstream_connecting_error(&err);
                     if debug_logs {
                         let duration_ms = started.elapsed().as_millis();
                         self.logs.push(
@@ -1349,8 +1400,10 @@ impl Resolver {
                             ),
                         );
                     }
-                    self.health
-                        .record_failure(name, FailureKind::Transport, err.to_string());
+                    if !connecting {
+                        self.health
+                            .record_failure(name, FailureKind::Transport, err.to_string());
+                    }
                 }
             }
         }
@@ -1459,6 +1512,52 @@ impl Resolver {
 }
 
 impl UpstreamClient {
+    fn pool_state(&self) -> UpstreamPoolState {
+        UpstreamPoolState::from_u8(self.state.load(Ordering::Acquire))
+    }
+
+    fn store_pool_state(&self, state: UpstreamPoolState) {
+        self.state.store(state as u8, Ordering::Release);
+    }
+
+    fn should_skip_for_query(&self) -> bool {
+        matches!(
+            self.pool_state(),
+            UpstreamPoolState::Connecting
+                | UpstreamPoolState::Degraded
+                | UpstreamPoolState::Recovering
+        )
+    }
+
+    fn mark_ready(&self) {
+        self.transport_failure_streak.store(0, Ordering::Release);
+        self.store_pool_state(UpstreamPoolState::Ready);
+    }
+
+    fn mark_transport_failure(&self) {
+        *self.endpoint_addrs.lock() = None;
+        let failures = self.transport_failure_streak.fetch_add(1, Ordering::AcqRel) + 1;
+        if failures >= self.failure_threshold {
+            self.store_pool_state(UpstreamPoolState::Degraded);
+        } else {
+            self.store_pool_state(UpstreamPoolState::Cold);
+        }
+    }
+
+    fn begin_connect(&self) -> Result<tokio::sync::MutexGuard<'_, ()>> {
+        let state = if self.pool_state() == UpstreamPoolState::Degraded {
+            UpstreamPoolState::Recovering
+        } else {
+            UpstreamPoolState::Connecting
+        };
+        let Ok(guard) = self.connect_gate.try_lock() else {
+            self.store_pool_state(state);
+            return Err(anyhow!(UpstreamConnecting));
+        };
+        self.store_pool_state(state);
+        Ok(guard)
+    }
+
     async fn exchange(&self, req: &[u8], timeout: Option<Duration>) -> Result<Vec<u8>> {
         let fut = async {
             match self.endpoint.scheme.as_str() {
@@ -1486,6 +1585,12 @@ impl UpstreamClient {
         } else {
             fut.await
         }
+        .inspect(|_| self.mark_ready())
+        .inspect_err(|err| {
+            if !is_upstream_connecting_error(err) {
+                self.mark_transport_failure();
+            }
+        })
     }
 
     async fn exchange_udp(&self, req: &[u8]) -> Result<Vec<u8>> {
@@ -1498,12 +1603,18 @@ impl UpstreamClient {
         if let Some(client) = self.udp.lock().clone() {
             return Ok(client);
         }
+        let _connect_guard = self.begin_connect()?;
+        if let Some(client) = self.udp.lock().clone() {
+            self.mark_ready();
+            return Ok(client);
+        }
         let client = UdpUpstreamClient::new().await?;
         let mut udp = self.udp.lock();
         if let Some(existing) = udp.as_ref() {
             return Ok(existing.clone());
         }
         *udp = Some(client.clone());
+        self.mark_ready();
         Ok(client)
     }
 
@@ -1526,6 +1637,11 @@ impl UpstreamClient {
         if let Some(client) = self.socks5_udp.lock().clone() {
             return Ok(client);
         }
+        let _connect_guard = self.begin_connect()?;
+        if let Some(client) = self.socks5_udp.lock().clone() {
+            self.mark_ready();
+            return Ok(client);
+        }
         let proxy = self
             .proxy
             .as_ref()
@@ -1536,6 +1652,7 @@ impl UpstreamClient {
             return Ok(existing.clone());
         }
         *socks5_udp = Some(client.clone());
+        self.mark_ready();
         Ok(client)
     }
 
@@ -1558,6 +1675,11 @@ impl UpstreamClient {
         if let Some(client) = self.tcp.lock().clone() {
             return Ok(client);
         }
+        let _connect_guard = self.begin_connect()?;
+        if let Some(client) = self.tcp.lock().clone() {
+            self.mark_ready();
+            return Ok(client);
+        }
         let stream: BoxedAsyncIo = if let Some(proxy) = &self.proxy {
             Box::new(socks5_connect(proxy, &self.endpoint.address).await?)
         } else {
@@ -1569,6 +1691,7 @@ impl UpstreamClient {
         }
         let client = LenPrefixedUpstreamClient::new(stream);
         *tcp = Some(client.clone());
+        self.mark_ready();
         Ok(client)
     }
 
@@ -1591,6 +1714,11 @@ impl UpstreamClient {
         if let Some(client) = self.dot.lock().clone() {
             return Ok(client);
         }
+        let _connect_guard = self.begin_connect()?;
+        if let Some(client) = self.dot.lock().clone() {
+            self.mark_ready();
+            return Ok(client);
+        }
         let connector = TlsConnector::from(client_tls_config());
         let server_name = ServerName::try_from(self.endpoint.server_name.clone())
             .context("invalid DoT server name")?;
@@ -1607,6 +1735,7 @@ impl UpstreamClient {
         }
         let client = LenPrefixedUpstreamClient::new(stream);
         *dot = Some(client.clone());
+        self.mark_ready();
         Ok(client)
     }
 
@@ -1632,12 +1761,18 @@ impl UpstreamClient {
         if let Some(client) = self.doq.lock().clone() {
             return Ok(client);
         }
+        let _connect_guard = self.begin_connect()?;
+        if let Some(client) = self.doq.lock().clone() {
+            self.mark_ready();
+            return Ok(client);
+        }
         let client = DoqUpstreamClient::connect(&self.endpoint, self.bootstrap.as_deref()).await?;
         let mut doq = self.doq.lock();
         if let Some(existing) = doq.as_ref() {
             return Ok(existing.clone());
         }
         *doq = Some(client.clone());
+        self.mark_ready();
         Ok(client)
     }
 
@@ -1660,6 +1795,28 @@ impl UpstreamClient {
     }
 
     async fn endpoint_addrs(&self) -> Result<Vec<SocketAddr>> {
+        if let Some(addrs) = self.endpoint_addrs.lock().clone() {
+            return Ok(addrs.to_vec());
+        }
+        let Ok(_resolve_guard) = self.resolve_gate.try_lock() else {
+            self.store_pool_state(if self.pool_state() == UpstreamPoolState::Degraded {
+                UpstreamPoolState::Recovering
+            } else {
+                UpstreamPoolState::Connecting
+            });
+            return Err(anyhow!(UpstreamConnecting));
+        };
+        if let Some(addrs) = self.endpoint_addrs.lock().clone() {
+            return Ok(addrs.to_vec());
+        }
+        let addrs = self.resolve_endpoint_addrs().await?;
+        if !addrs.is_empty() {
+            *self.endpoint_addrs.lock() = Some(addrs.clone().into());
+        }
+        Ok(addrs)
+    }
+
+    async fn resolve_endpoint_addrs(&self) -> Result<Vec<SocketAddr>> {
         if let Some(bootstrap) = &self.bootstrap {
             return bootstrap
                 .resolve_socket_addrs(&self.endpoint.host, self.endpoint.port)
@@ -2392,6 +2549,7 @@ async fn run_health_loop(
             Ok(_) => {
                 health.record_probe_failure(&client.name, "healthcheck returned retryable response")
             }
+            Err(err) if is_upstream_connecting_error(&err) => {}
             Err(err) => health.record_probe_failure(&client.name, err.to_string()),
         }
         drop(permit);
@@ -2669,6 +2827,7 @@ impl HealthSnapshot {
             .unwrap_or(false)
     }
 
+    #[cfg(test)]
     fn should_skip_for_query(&self, name: &str) -> bool {
         if !self.enabled {
             return false;
@@ -3472,6 +3631,28 @@ mod tests {
     use super::*;
     use std::io;
 
+    fn test_upstream_client() -> UpstreamClient {
+        UpstreamClient {
+            name: "upstream".to_string(),
+            endpoint: endpoint_from_url(&Url::parse("udp://192.0.2.53:53").unwrap(), "")
+                .expect("endpoint"),
+            proxy: None,
+            bootstrap: None,
+            http: None,
+            state: Arc::new(AtomicU8::new(UpstreamPoolState::Cold as u8)),
+            transport_failure_streak: Arc::new(AtomicU32::new(0)),
+            connect_gate: Arc::new(AsyncMutex::new(())),
+            resolve_gate: Arc::new(AsyncMutex::new(())),
+            failure_threshold: 2,
+            endpoint_addrs: Arc::new(Mutex::new(None)),
+            udp: Arc::new(Mutex::new(None)),
+            socks5_udp: Arc::new(Mutex::new(None)),
+            tcp: Arc::new(Mutex::new(None)),
+            dot: Arc::new(Mutex::new(None)),
+            doq: Arc::new(Mutex::new(None)),
+        }
+    }
+
     #[test]
     fn listener_bind_error_explains_port_conflict() {
         let err = listener_bind_error("UDP", "127.0.0.1:53", io::Error::from(ErrorKind::AddrInUse))
@@ -3829,6 +4010,40 @@ mod tests {
         let snapshot = health.snapshot();
         assert!(!snapshot.healthy("upstream"));
         assert!(!snapshot.should_skip_for_query("upstream"));
+    }
+
+    #[test]
+    fn upstream_pool_transport_failure_degrades_after_threshold() {
+        let client = test_upstream_client();
+
+        assert!(!client.should_skip_for_query());
+        client.mark_transport_failure();
+        assert_eq!(client.pool_state(), UpstreamPoolState::Cold);
+        assert!(!client.should_skip_for_query());
+
+        client.mark_transport_failure();
+        assert_eq!(client.pool_state(), UpstreamPoolState::Degraded);
+        assert!(client.should_skip_for_query());
+
+        client.mark_ready();
+        assert_eq!(client.pool_state(), UpstreamPoolState::Ready);
+        assert!(!client.should_skip_for_query());
+    }
+
+    #[test]
+    fn upstream_pool_singleflight_marks_concurrent_connecting() {
+        let client = test_upstream_client();
+
+        let guard = client.begin_connect().expect("begin connect");
+        assert_eq!(client.pool_state(), UpstreamPoolState::Connecting);
+        assert!(client.should_skip_for_query());
+
+        let err = client.begin_connect().expect_err("second connect is gated");
+        assert!(is_upstream_connecting_error(&err));
+
+        drop(guard);
+        client.mark_ready();
+        assert!(!client.should_skip_for_query());
     }
 
     #[test]
