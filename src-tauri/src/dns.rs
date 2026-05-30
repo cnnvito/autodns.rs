@@ -330,6 +330,7 @@ pub struct HealthMonitor {
 #[derive(Clone)]
 struct HealthRecord {
     healthy: bool,
+    degraded: bool,
     failure_streak: u32,
     recovery_streak: u32,
     probe_failure_streak: u32,
@@ -351,6 +352,12 @@ struct UpstreamDiagnostics {
     last_error: Option<String>,
     last_success_at: Option<String>,
     latency_ms: Option<u128>,
+}
+
+#[derive(Clone, Copy)]
+enum FailureKind {
+    Transport,
+    RetryableResponse,
 }
 
 #[derive(Clone)]
@@ -460,12 +467,10 @@ pub async fn start_runtime(
 
 fn listener_bind_error(protocol: &str, listen: &str, err: std::io::Error) -> anyhow::Error {
     match err.kind() {
-        ErrorKind::AddrInUse => anyhow!(
-            "{protocol} listen address {listen} is already in use"
-        ),
-        ErrorKind::PermissionDenied => anyhow!(
-            "{protocol} listen address {listen} permission denied"
-        ),
+        ErrorKind::AddrInUse => anyhow!("{protocol} listen address {listen} is already in use"),
+        ErrorKind::PermissionDenied => {
+            anyhow!("{protocol} listen address {listen} permission denied")
+        }
         _ => anyhow!("{protocol} listen address {listen} bind failed: {err}"),
     }
 }
@@ -1207,10 +1212,23 @@ impl Resolver {
         // still have an answer for split-horizon, geo, or policy-routed domains. Keep the
         // latest negative as a fallback and only return it after every selected upstream
         // has failed to produce an answer.
+        let health = self.health.snapshot();
+        let healthy_selected = selected
+            .iter()
+            .any(|name| !health.should_skip_for_query(name));
         let mut last_negative = None;
         let mut attempt_count = 0usize;
         let mut last_error = None;
         for name in selected.iter() {
+            if healthy_selected && health.should_skip_for_query(name) {
+                if debug_logs {
+                    self.logs.push(
+                        "debug",
+                        format!("dns query {qname} {qtype} route {route_id} skipped degraded upstream {name}"),
+                    );
+                }
+                continue;
+            }
             let Some(client) = self.clients.get(name) else {
                 if debug_logs {
                     self.logs.push(
@@ -1272,7 +1290,8 @@ impl Resolver {
                         }
                         ResponseClass::Negative => {
                             let error = "upstream returned no answer";
-                            self.health.record_failure(name, error);
+                            self.health
+                                .record_negative_response(name, started.elapsed());
                             let history_error = if rcode(&resp) == Some(RCODE_NAME_ERROR) {
                                 String::new()
                             } else {
@@ -1301,7 +1320,8 @@ impl Resolver {
                         }
                         ResponseClass::Retry => {
                             let error = "upstream returned retryable response";
-                            self.health.record_failure(name, error);
+                            self.health
+                                .record_failure(name, FailureKind::RetryableResponse, error);
                             last_error = Some(error.to_string());
                             if debug_logs {
                                 let duration_ms = started.elapsed().as_millis();
@@ -1329,7 +1349,8 @@ impl Resolver {
                             ),
                         );
                     }
-                    self.health.record_failure(name, err.to_string());
+                    self.health
+                        .record_failure(name, FailureKind::Transport, err.to_string());
                 }
             }
         }
@@ -2406,6 +2427,7 @@ impl HealthMonitor {
                     name,
                     HealthRecord {
                         healthy: true,
+                        degraded: false,
                         failure_streak: 0,
                         recovery_streak: 0,
                         probe_failure_streak: 0,
@@ -2476,7 +2498,11 @@ impl HealthMonitor {
     }
 
     fn record_probe_failure(&self, name: &str, err: impl Into<String>) {
-        self.record_failure(name, err);
+        self.record_failure(name, FailureKind::Transport, err);
+    }
+
+    fn record_negative_response(&self, name: &str, latency: Duration) {
+        self.record_success(name, latency, true);
     }
 
     fn record_success(&self, name: &str, latency: Duration, real_query: bool) {
@@ -2487,6 +2513,7 @@ impl HealthMonitor {
             };
             state.last_error = None;
             state.last_success_at = Some(Utc::now().to_rfc3339());
+            state.degraded = false;
             if real_query {
                 state.last_query_success_at = Some(Instant::now());
             }
@@ -2508,7 +2535,7 @@ impl HealthMonitor {
         self.notify_listener();
     }
 
-    fn record_failure(&self, name: &str, err: impl Into<String>) {
+    fn record_failure(&self, name: &str, kind: FailureKind, err: impl Into<String>) {
         {
             let mut states = self.states.lock();
             let Some(state) = states.get_mut(name) else {
@@ -2523,6 +2550,9 @@ impl HealthMonitor {
                     state.failure_streak += 1;
                     if state.failure_streak >= self.failure_threshold {
                         state.healthy = false;
+                        if matches!(kind, FailureKind::Transport) {
+                            state.degraded = true;
+                        }
                         state.failure_streak = 0;
                     }
                 }
@@ -2636,6 +2666,16 @@ impl HealthSnapshot {
         self.states
             .get(name)
             .map(|state| state.healthy)
+            .unwrap_or(false)
+    }
+
+    fn should_skip_for_query(&self, name: &str) -> bool {
+        if !self.enabled {
+            return false;
+        }
+        self.states
+            .get(name)
+            .map(|state| state.degraded)
             .unwrap_or(false)
     }
 
@@ -3434,12 +3474,8 @@ mod tests {
 
     #[test]
     fn listener_bind_error_explains_port_conflict() {
-        let err = listener_bind_error(
-            "UDP",
-            "127.0.0.1:53",
-            io::Error::from(ErrorKind::AddrInUse),
-        )
-        .to_string();
+        let err = listener_bind_error("UDP", "127.0.0.1:53", io::Error::from(ErrorKind::AddrInUse))
+            .to_string();
 
         assert!(err.contains("already in use"));
         assert!(err.contains("127.0.0.1:53"));
@@ -3748,6 +3784,51 @@ mod tests {
 
         health.record_probe_success("upstream", Duration::from_millis(8));
         assert_eq!(health.probe_delay("upstream", interval), interval);
+    }
+
+    #[test]
+    fn health_negative_response_does_not_degrade_upstream() {
+        let health = HealthMonitor::new(true, 1, 1, vec!["upstream".to_string()]);
+
+        health.record_failure("upstream", FailureKind::Transport, "first failure");
+        assert!(health.snapshot().should_skip_for_query("upstream"));
+
+        health.record_negative_response("upstream", Duration::from_millis(9));
+
+        let snapshot = health.snapshot();
+        assert!(snapshot.healthy("upstream"));
+        assert!(!snapshot.should_skip_for_query("upstream"));
+    }
+
+    #[test]
+    fn health_transport_failure_degrades_and_success_recovers_upstream() {
+        let health = HealthMonitor::new(true, 2, 1, vec!["upstream".to_string()]);
+
+        health.record_failure("upstream", FailureKind::Transport, "first failure");
+        assert!(!health.snapshot().should_skip_for_query("upstream"));
+
+        health.record_failure("upstream", FailureKind::Transport, "second failure");
+        assert!(health.snapshot().should_skip_for_query("upstream"));
+
+        health.record_probe_success("upstream", Duration::from_millis(8));
+        let snapshot = health.snapshot();
+        assert!(snapshot.healthy("upstream"));
+        assert!(!snapshot.should_skip_for_query("upstream"));
+    }
+
+    #[test]
+    fn health_retryable_response_does_not_degrade_upstream() {
+        let health = HealthMonitor::new(true, 1, 1, vec!["upstream".to_string()]);
+
+        health.record_failure(
+            "upstream",
+            FailureKind::RetryableResponse,
+            "retryable response",
+        );
+
+        let snapshot = health.snapshot();
+        assert!(!snapshot.healthy("upstream"));
+        assert!(!snapshot.should_skip_for_query("upstream"));
     }
 
     #[test]
