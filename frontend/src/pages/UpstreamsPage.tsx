@@ -5,12 +5,17 @@ import { useState } from "react";
 import { proxyProtocolOptions, upstreamProtocolOptions } from "../features/config/options";
 import type { ConfigPageProps } from "../features/config/doc";
 import { defaultPortForProtocol, defaultPortForProxy } from "../features/config/transforms";
+import type { ConfigValidation } from "../features/config/validation";
 import type { ProxyConfig, UpstreamConfig } from "../shared/types";
 
 type UpstreamEndpointPatch = Pick<UpstreamConfig, "protocol" | "host" | "port" | "path">;
 type ProxyAddressPatch = Pick<ProxyConfig, "host" | "port">;
 
-export function UpstreamsPage({ doc, onChange }: ConfigPageProps) {
+type UpstreamsPageProps = ConfigPageProps & {
+  validation: ConfigValidation["resolver"];
+};
+
+export function UpstreamsPage({ doc, onChange, validation }: UpstreamsPageProps) {
   const [endpointDrafts, setEndpointDrafts] = useState<Record<number, string>>({});
   const [proxyAddressDrafts, setProxyAddressDrafts] = useState<Record<number, string>>({});
 
@@ -159,6 +164,7 @@ export function UpstreamsPage({ doc, onChange }: ConfigPageProps) {
               mode="tags"
               value={cfg.resolver.bootstrapDns}
               onChange={updateBootstrapDns}
+              status={Object.keys(validation.bootstrapDns).length ? "error" : undefined}
               placeholder="1.1.1.1:53, 8.8.8.8:53"
               open={false}
               suffixIcon={null}
@@ -222,7 +228,9 @@ export function UpstreamsPage({ doc, onChange }: ConfigPageProps) {
                 title: "上游标识",
                 width: 160,
                 render: (_value, record) => (
-                  <Input value={record.item.name} onChange={(event) => updateUpstream(record.index, { name: event.target.value })} placeholder="cloudflare" />
+                  <FieldWithError error={validation.upstreams[record.index]?.name}>
+                    <Input status={validation.upstreams[record.index]?.name ? "error" : undefined} value={record.item.name} onChange={(event) => updateUpstream(record.index, { name: event.target.value })} placeholder="cloudflare" />
+                  </FieldWithError>
                 )
               },
               {
@@ -231,17 +239,21 @@ export function UpstreamsPage({ doc, onChange }: ConfigPageProps) {
                 render: (_value, record) => {
                   const draft = endpointDrafts[record.index];
                   const endpointValue = draft ?? formatUpstreamEndpoint(record.item);
-                  const endpointStatus = draft !== undefined && !parseUpstreamEndpoint(draft) ? "error" : undefined;
+                  const endpointError = draft !== undefined && !parseUpstreamEndpoint(draft)
+                    ? "上游端点无效，请检查协议、主机和端口。"
+                    : validation.upstreams[record.index]?.endpoint;
                   return (
-                    <Input
-                      className="upstreamEndpointInput"
-                      value={endpointValue}
-                      status={endpointStatus}
-                      onChange={(event) => updateEndpointInput(record.index, event.target.value)}
-                      onBlur={() => commitEndpointInput(record.index)}
-                      onPressEnter={(event) => event.currentTarget.blur()}
-                      placeholder="udp://1.1.1.1:53"
-                    />
+                    <FieldWithError error={endpointError}>
+                      <Input
+                        className="upstreamEndpointInput"
+                        value={endpointValue}
+                        status={endpointError ? "error" : undefined}
+                        onChange={(event) => updateEndpointInput(record.index, event.target.value)}
+                        onBlur={() => commitEndpointInput(record.index)}
+                        onPressEnter={(event) => event.currentTarget.blur()}
+                        placeholder="udp://1.1.1.1:53"
+                      />
+                    </FieldWithError>
                   );
                 }
               },
@@ -265,7 +277,9 @@ export function UpstreamsPage({ doc, onChange }: ConfigPageProps) {
                 title: "代理",
                 width: 140,
                 render: (_value, record) => (
-                  <Select className="workbenchInlineSelect" value={record.item.proxy} onChange={(value) => updateUpstream(record.index, { proxy: value })} options={proxyOptions} />
+                  <FieldWithError error={validation.upstreams[record.index]?.proxy}>
+                    <Select className="workbenchInlineSelect" status={validation.upstreams[record.index]?.proxy ? "error" : undefined} value={record.item.proxy} onChange={(value) => updateUpstream(record.index, { proxy: value })} options={proxyOptions} />
+                  </FieldWithError>
                 )
               },
               {
@@ -302,7 +316,9 @@ export function UpstreamsPage({ doc, onChange }: ConfigPageProps) {
                 title: "名称",
                 width: 150,
                 render: (_value, record) => (
-                  <Input value={record.item.name} onChange={(event) => updateProxy(record.index, { name: event.target.value })} placeholder="名称" />
+                  <FieldWithError error={validation.proxies[record.index]?.name}>
+                    <Input status={validation.proxies[record.index]?.name ? "error" : undefined} value={record.item.name} onChange={(event) => updateProxy(record.index, { name: event.target.value })} placeholder="名称" />
+                  </FieldWithError>
                 )
               },
               {
@@ -323,17 +339,21 @@ export function UpstreamsPage({ doc, onChange }: ConfigPageProps) {
                 render: (_value, record) => {
                   const draft = proxyAddressDrafts[record.index];
                   const addressValue = draft ?? formatProxyAddress(record.item);
-                  const addressStatus = draft !== undefined && !parseProxyAddress(draft, record.item) ? "error" : undefined;
+                  const addressError = draft !== undefined && !parseProxyAddress(draft, record.item)
+                    ? "代理地址无效，请填写主机和 1-65535 端口。"
+                    : validation.proxies[record.index]?.address;
                   return (
-                    <Input
-                      className="proxyAddressInput"
-                      value={addressValue}
-                      status={addressStatus}
-                      onChange={(event) => updateProxyAddressInput(record.index, event.target.value)}
-                      onBlur={() => commitProxyAddressInput(record.index)}
-                      onPressEnter={(event) => event.currentTarget.blur()}
-                      placeholder="127.0.0.1:1080"
-                    />
+                    <FieldWithError error={addressError}>
+                      <Input
+                        className="proxyAddressInput"
+                        value={addressValue}
+                        status={addressError ? "error" : undefined}
+                        onChange={(event) => updateProxyAddressInput(record.index, event.target.value)}
+                        onBlur={() => commitProxyAddressInput(record.index)}
+                        onPressEnter={(event) => event.currentTarget.blur()}
+                        placeholder="127.0.0.1:1080"
+                      />
+                    </FieldWithError>
                   );
                 }
               },
@@ -480,5 +500,14 @@ function LoadingPanel() {
     <Card title="上游">
       <Typography.Text type="secondary">正在加载本地配置。</Typography.Text>
     </Card>
+  );
+}
+
+function FieldWithError({ error, children }: { error?: string; children: React.ReactNode }) {
+  return (
+    <Space direction="vertical" size={4} className="pageFill">
+      {children}
+      {error ? <Typography.Text type="danger">{error}</Typography.Text> : null}
+    </Space>
   );
 }

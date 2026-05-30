@@ -7,6 +7,7 @@ import { useState } from "react";
 import { matchOptions } from "../features/config/options";
 import { defaultRoute, formatHost, formatRoute, parseHost, parseRoute } from "../features/config/transforms";
 import type { ConfigPageProps } from "../features/config/doc";
+import type { ConfigValidation } from "../features/config/validation";
 
 type ImportKind = "hosts" | "routes";
 
@@ -20,7 +21,11 @@ type ImportPreviewItem = {
 
 type TagRender = SelectProps["tagRender"];
 
-export function RulesPage({ doc, onChange }: ConfigPageProps) {
+type RulesPageProps = ConfigPageProps & {
+  validation: ConfigValidation["resolver"];
+};
+
+export function RulesPage({ doc, onChange, validation }: RulesPageProps) {
   const [importKind, setImportKind] = useState<ImportKind | null>(null);
   const [importDraft, setImportDraft] = useState("");
   const [activeRuleKind, setActiveRuleKind] = useState<ImportKind>("hosts");
@@ -146,22 +151,27 @@ export function RulesPage({ doc, onChange }: ConfigPageProps) {
                       title: "域名",
                       dataIndex: ["row", "domain"],
                       render: (_value, record) => (
-                        <Input value={record.row.domain} onChange={(event) => updateHost(record.index, { ...record.row, domain: event.target.value })} placeholder="example.local" />
+                        <FieldWithError error={validation.hosts[record.index]?.domain}>
+                          <Input status={validation.hosts[record.index]?.domain ? "error" : undefined} value={record.row.domain} onChange={(event) => updateHost(record.index, { ...record.row, domain: event.target.value })} placeholder="example.local" />
+                        </FieldWithError>
                       )
                     },
                     {
                       title: "IP 地址",
                       dataIndex: ["row", "ips"],
                       render: (_value, record) => (
-                        <Select
-                          className="workbenchInlineSelect workbenchTagsSelect"
-                          mode="tags"
-                          value={splitList(record.row.ips)}
-                          onChange={(values) => updateHost(record.index, { ...record.row, ips: values.join(", ") })}
-                          placeholder="127.0.0.1, ::1"
-                          open={false}
-                          suffixIcon={null}
-                        />
+                        <FieldWithError error={validation.hosts[record.index]?.ips}>
+                          <Select
+                            className="workbenchInlineSelect workbenchTagsSelect"
+                            status={validation.hosts[record.index]?.ips ? "error" : undefined}
+                            mode="tags"
+                            value={splitList(record.row.ips)}
+                            onChange={(values) => updateHost(record.index, { ...record.row, ips: values.join(", ") })}
+                            placeholder="127.0.0.1, ::1"
+                            open={false}
+                            suffixIcon={null}
+                          />
+                        </FieldWithError>
                       )
                     },
                     {
@@ -201,21 +211,26 @@ export function RulesPage({ doc, onChange }: ConfigPageProps) {
                       title: "域名",
                       width: 220,
                       render: (_value, record) => (
-                        <Input value={record.row.domain} onChange={(event) => updateRoute(record.index, { ...record.row, domain: event.target.value })} placeholder="example.com" />
+                        <FieldWithError error={validation.routes[record.index]?.domain}>
+                          <Input status={validation.routes[record.index]?.domain ? "error" : undefined} value={record.row.domain} onChange={(event) => updateRoute(record.index, { ...record.row, domain: event.target.value })} placeholder="example.com" />
+                        </FieldWithError>
                       )
                     },
                     {
                       title: "目标上游",
                       render: (_value, record) => (
-                        <Select
-                          className="workbenchInlineSelect workbenchTagsSelect"
-                          mode="multiple"
-                          value={record.row.upstreams}
-                          onChange={(values) => updateRoute(record.index, { ...record.row, upstreams: values })}
-                          options={routeUpstreamOptions}
-                          tagRender={routeUpstreamTagRender}
-                          placeholder="选择上游"
-                        />
+                        <FieldWithError error={validation.routes[record.index]?.upstreams}>
+                          <Select
+                            className="workbenchInlineSelect workbenchTagsSelect"
+                            status={validation.routes[record.index]?.upstreams ? "error" : undefined}
+                            mode="multiple"
+                            value={record.row.upstreams}
+                            onChange={(values) => updateRoute(record.index, { ...record.row, upstreams: values })}
+                            options={routeUpstreamOptions}
+                            tagRender={routeUpstreamTagRender}
+                            placeholder="选择上游"
+                          />
+                        </FieldWithError>
                       )
                     },
                     {
@@ -425,5 +440,14 @@ function LoadingPanel() {
     <Card title="规则">
       <Typography.Text type="secondary">正在加载本地配置。</Typography.Text>
     </Card>
+  );
+}
+
+function FieldWithError({ error, children }: { error?: string; children: ReactNode }) {
+  return (
+    <Space direction="vertical" size={4} className="pageFill">
+      {children}
+      {error ? <Typography.Text type="danger">{error}</Typography.Text> : null}
+    </Space>
   );
 }

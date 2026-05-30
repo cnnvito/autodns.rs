@@ -15,7 +15,7 @@ import {
   StopOutlined
 } from "@ant-design/icons";
 import { App as AntdApp, Button, ConfigProvider, Layout, Menu, Modal, Space, Tag, Typography, notification, theme as antdTheme } from "antd";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 import {
   applySystemDns,
@@ -36,21 +36,17 @@ import {
   stopAutodns,
   validateConfig
 } from "../shared/api";
+import { emptyConfigValidation, flattenValidationMessages, hasValidationErrors, validateDesktopConfig } from "../features/config/validation";
 import { errorMessage, formatDate } from "../shared/format";
 import type { ConfigDocument, DesktopPreferences, DesktopStatus, SystemDnsSettings, SystemDnsStatus } from "../shared/types";
-import { HistoryPage } from "../pages/HistoryPage";
-import { LookupPage } from "../pages/LookupPage";
-import { OverviewPage } from "../pages/OverviewPage";
-import { RulesPage } from "../pages/RulesPage";
-import { SettingsPage, type SettingsSection } from "../pages/SettingsPage";
-import { UpstreamsPage } from "../pages/UpstreamsPage";
+import type { SettingsSection } from "../pages/SettingsPage";
 import { LoadingOverlay } from "../shared/LoadingOverlay";
 import { applyThemePreference, loadThemePreference, normalizeTheme, themeOptions, type ThemePreference } from "./theme";
 
 type NavigationItem = {
   key: string;
   label: string;
-  icon: React.ReactNode;
+  icon: ReactNode;
 };
 
 type NotificationKind = "success" | "error" | "warning" | "info";
@@ -72,6 +68,13 @@ const defaultPreferences: DesktopPreferences = {
 };
 
 const { Header, Sider, Content, Footer } = Layout;
+
+const HistoryPage = lazy(() => import("../pages/HistoryPage").then((module) => ({ default: module.HistoryPage })));
+const LookupPage = lazy(() => import("../pages/LookupPage").then((module) => ({ default: module.LookupPage })));
+const OverviewPage = lazy(() => import("../pages/OverviewPage").then((module) => ({ default: module.OverviewPage })));
+const RulesPage = lazy(() => import("../pages/RulesPage").then((module) => ({ default: module.RulesPage })));
+const SettingsPage = lazy(() => import("../pages/SettingsPage").then((module) => ({ default: module.SettingsPage })));
+const UpstreamsPage = lazy(() => import("../pages/UpstreamsPage").then((module) => ({ default: module.UpstreamsPage })));
 
 const navigationItems: NavigationItem[] = [
   { key: "overview", label: "状态", icon: <DashboardOutlined /> },
@@ -291,6 +294,9 @@ export function App() {
   }, []);
 
   const running = status?.running ?? false;
+  const validation = useMemo(() => configDoc ? validateDesktopConfig(configDoc.config) : emptyConfigValidation(), [configDoc]);
+  const validationMessages = useMemo(() => flattenValidationMessages(validation), [validation]);
+  const validationErrorCount = validationMessages.length;
   const lastStarted = useMemo(() => formatDate(status?.startedAt), [status?.startedAt]);
   const restartRequired = useMemo(() => needsRuntimeRestart(configDoc, savedConfigDoc), [configDoc, savedConfigDoc]);
   const dirty = useMemo(() => hasConfigChanges(configDoc, savedConfigDoc), [configDoc, savedConfigDoc]);
@@ -343,6 +349,10 @@ export function App() {
     if (!configDoc) {
       return;
     }
+    if (hasValidationErrors(validation)) {
+      notify("warning", "配置校验未通过", validationMessages.slice(0, 3).join("\n"));
+      return;
+    }
     beginBusy("正在校验配置");
     try {
       await validateConfig(configDoc.config);
@@ -356,6 +366,10 @@ export function App() {
 
   async function handleSaveConfig() {
     if (!configDoc) {
+      return;
+    }
+    if (hasValidationErrors(validation)) {
+      notify("warning", "请先修正配置", validationMessages.slice(0, 3).join("\n"));
       return;
     }
     beginBusy(restartRequired ? "正在保存配置并重启服务" : "正在保存配置");
@@ -518,10 +532,10 @@ export function App() {
 
   function renderActivePage() {
     if (activeTab === "rules") {
-      return <RulesPage doc={configDoc} onChange={handleConfigDocChange} />;
+      return <RulesPage doc={configDoc} onChange={handleConfigDocChange} validation={validation.resolver} />;
     }
     if (activeTab === "upstreams") {
-      return <UpstreamsPage doc={configDoc} onChange={handleConfigDocChange} />;
+      return <UpstreamsPage doc={configDoc} onChange={handleConfigDocChange} validation={validation.resolver} />;
     }
     if (activeTab === "lookup") {
       return <LookupPage running={running} />;
@@ -534,6 +548,7 @@ export function App() {
         <SettingsPage
           doc={configDoc}
           onChange={handleConfigDocChange}
+          validation={validation}
           theme={theme}
           themeOptions={themeOptions}
           preferences={preferences}
@@ -631,14 +646,16 @@ export function App() {
             </Sider>
             <Content className="appContent">
               <section className="workspace loadingOverlayHost" aria-busy={Boolean(workspaceLoadingText)}>
-                {renderActivePage()}
+                <Suspense fallback={<LoadingOverlay text="正在加载页面" compact />}>
+                  {renderActivePage()}
+                </Suspense>
                 {workspaceLoadingText ? <LoadingOverlay text={workspaceLoadingText} /> : null}
               </section>
               {dirty ? (
                 <div className="configSaveShelf" role="status" aria-live="polite">
                   <div className="configSaveShelfText">
                     <strong>未保存修改</strong>
-                    <span>{dirtyHint}</span>
+                    <span>{validationErrorCount ? `发现 ${validationErrorCount} 个配置问题，请修正后再保存。` : dirtyHint}</span>
                   </div>
                   <Space.Compact className="configSaveShelfActions">
                     <Button size="small" icon={<CheckCircleOutlined />} onClick={handleValidateConfig} disabled={busy || !configDoc}>
@@ -647,7 +664,7 @@ export function App() {
                     <Button size="small" icon={<RollbackOutlined />} onClick={handleDiscardConfig} disabled={busy || !dirty}>
                       放弃
                     </Button>
-                    <Button size="small" type="primary" icon={<SaveOutlined />} onClick={handleSaveConfig} disabled={busy || !configDoc || !dirty}>
+                    <Button size="small" type="primary" icon={<SaveOutlined />} onClick={handleSaveConfig} disabled={busy || !configDoc || !dirty || validationErrorCount > 0}>
                       保存
                     </Button>
                   </Space.Compact>
