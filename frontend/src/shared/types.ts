@@ -26,6 +26,25 @@ export type ConfigDocument = {
   config: DesktopConfig;
 };
 
+export type CertificateDefaults = {
+  commonName: string;
+  organization: string;
+  domains: string[];
+  ipAddresses: string[];
+  validDays: number;
+  outputDir: string;
+  filePrefix: string;
+};
+
+export type GenerateCertificateRequest = CertificateDefaults;
+
+export type GeneratedCertificate = {
+  caCertFile: string;
+  caKeyFile: string;
+  certFile: string;
+  keyFile: string;
+};
+
 export type ApplyConfigAction = "saved" | "hotReloaded" | "restarted";
 
 export type ApplyConfigResult = {
@@ -104,8 +123,11 @@ export type DesktopConfig = {
 export type ServerConfig = {
   mode: string;
   listen: string;
+  tlsSource: string;
   certFile: string;
   keyFile: string;
+  certPem: string;
+  keyPem: string;
   path: string;
 };
 
@@ -206,6 +228,7 @@ export type LanguagePreference = "system" | "zh-CN" | "en-US";
 export type DesktopPreferences = {
   closeBehavior: CloseBehavior;
   language: LanguagePreference;
+  historyEnabled: boolean;
   startAtLogin: boolean;
   startAtLoginSupported: boolean;
   traySupported: boolean;

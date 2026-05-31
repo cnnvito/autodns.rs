@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 
 import type {
   ApplyConfigResult,
+  CertificateDefaults,
   ConfigDocument,
   DesktopConfig,
   DesktopPreferences,
@@ -12,6 +13,8 @@ import type {
   DnsHistoryTopDomain,
   DnsHistoryWindow,
   DnsLookupResult,
+  GenerateCertificateRequest,
+  GeneratedCertificate,
   LocalizedMessage,
   ProxyConfig,
   SystemDnsSettings,
@@ -34,6 +37,7 @@ const emptyStatus: DesktopStatus = {
 const emptyPreferences: DesktopPreferences = {
   closeBehavior: "ask",
   language: "system",
+  historyEnabled: true,
   startAtLogin: false,
   startAtLoginSupported: false,
   traySupported: false,
@@ -140,12 +144,24 @@ export async function validateConfig(config: DesktopConfig): Promise<void> {
   await invoke("validate_config", { config });
 }
 
+export async function validateServerCertificate(config: DesktopConfig): Promise<void> {
+  await invoke("validate_server_certificate", { config });
+}
+
 export async function saveConfig(doc: ConfigDocument): Promise<ApplyConfigResult> {
   const result = await invoke<ApplyConfigResult>("apply_config", { doc });
   return {
     action: result?.action ?? "saved",
     status: normalizeStatus(result?.status ?? emptyStatus)
   };
+}
+
+export async function loadCertificateDefaults(): Promise<CertificateDefaults> {
+  return normalizeCertificateDefaults(await invoke<CertificateDefaults>("certificate_defaults"));
+}
+
+export async function generateServerCertificate(request: GenerateCertificateRequest): Promise<GeneratedCertificate> {
+  return await invoke<GeneratedCertificate>("generate_server_certificate", { request });
 }
 
 export async function loadPreferences(): Promise<DesktopPreferences> {
@@ -192,6 +208,12 @@ function normalizeConfigDocument(doc: ConfigDocument): ConfigDocument {
     ...doc,
     config: {
       ...config,
+      server: {
+        ...config.server,
+        tlsSource: config.server.tlsSource || "file",
+        certPem: config.server.certPem || "",
+        keyPem: config.server.keyPem || ""
+      },
       resolver: {
         ...config.resolver,
         upstreams: normalizeUpstreams(config.resolver.upstreams),
@@ -204,6 +226,18 @@ function normalizeConfigDocument(doc: ConfigDocument): ConfigDocument {
         ipv6Enabled: typeof config.resolver.ipv6Enabled === "boolean" ? config.resolver.ipv6Enabled : true
       }
     }
+  };
+}
+
+function normalizeCertificateDefaults(defaults: CertificateDefaults): CertificateDefaults {
+  return {
+    commonName: defaults.commonName || "autodns.local",
+    organization: defaults.organization || "autodns",
+    domains: Array.isArray(defaults.domains) ? defaults.domains : ["localhost", "autodns.local"],
+    ipAddresses: Array.isArray(defaults.ipAddresses) ? defaults.ipAddresses : ["127.0.0.1", "::1"],
+    validDays: Number.isFinite(defaults.validDays) ? defaults.validDays : 3650,
+    outputDir: defaults.outputDir || "",
+    filePrefix: defaults.filePrefix || "autodns-local"
   };
 }
 
@@ -286,7 +320,8 @@ function normalizePreferences(prefs: DesktopPreferences): DesktopPreferences {
     ...emptyPreferences,
     ...prefs,
     closeBehavior: prefs.closeBehavior === "hide" || prefs.closeBehavior === "quit" ? prefs.closeBehavior : "ask",
-    language: prefs.language === "zh-CN" || prefs.language === "en-US" ? prefs.language : "system"
+    language: prefs.language === "zh-CN" || prefs.language === "en-US" ? prefs.language : "system",
+    historyEnabled: typeof prefs.historyEnabled === "boolean" ? prefs.historyEnabled : true
   };
 }
 

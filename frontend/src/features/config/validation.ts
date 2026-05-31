@@ -9,6 +9,8 @@ export type ConfigValidation = {
     path?: string;
     certFile?: string;
     keyFile?: string;
+    certPem?: string;
+    keyPem?: string;
   };
   resolver: {
     timeout?: string;
@@ -86,11 +88,22 @@ function validateServer(config: DesktopConfig, result: ConfigValidation, t: Tran
   if (mode === "doh" && !config.server.path.trim().startsWith("/")) {
     result.server.path = t("validation.server.path");
   }
-  if ((mode === "doh" || mode === "dot") && !config.server.certFile.trim()) {
-    result.server.certFile = t("validation.server.certFile");
-  }
-  if ((mode === "doh" || mode === "dot") && !config.server.keyFile.trim()) {
-    result.server.keyFile = t("validation.server.keyFile");
+  if (mode === "doh" || mode === "dot") {
+    if ((config.server.tlsSource || "file") === "inline") {
+      if (!config.server.certPem.trim()) {
+        result.server.certPem = t("validation.server.certPem");
+      }
+      if (!config.server.keyPem.trim()) {
+        result.server.keyPem = t("validation.server.keyPem");
+      }
+    } else {
+      if (!config.server.certFile.trim()) {
+        result.server.certFile = t("validation.server.certFile");
+      }
+      if (!config.server.keyFile.trim()) {
+        result.server.keyFile = t("validation.server.keyFile");
+      }
+    }
   }
 }
 

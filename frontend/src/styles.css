@@ -813,6 +813,37 @@ h2 {
   border-block-end: 0;
 }
 
+.serviceSettingsForm.ant-form .ant-form-item {
+  display: grid;
+  grid-template-columns: minmax(0, 0.42fr) minmax(0, 1fr);
+  align-items: center;
+  gap: 18px;
+  min-height: 0;
+  margin: 0;
+  padding: 10px 12px;
+  border-block-end: 1px solid var(--ant-color-border-secondary);
+}
+
+.serviceSettingsForm.ant-form .ant-form-item:last-child {
+  border-block-end: 0;
+}
+
+.serviceSettingsForm.ant-form .ant-form-item-label {
+  min-width: 0;
+  padding: 0;
+  text-align: start;
+}
+
+.serviceSettingsForm.ant-form .ant-form-item-label > label {
+  height: auto;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.serviceSettingsForm.ant-form .ant-form-item-control {
+  min-width: 0;
+}
+
 .settingRowLabel {
   min-width: 0;
 }
@@ -822,11 +853,22 @@ h2 {
   font-size: 13px;
 }
 
+.settingRequiredMark {
+  margin-inline-start: 4px;
+  color: var(--ant-color-error);
+}
+
 .settingRowLabel span {
   display: block;
   margin-top: 2px;
   color: var(--ant-color-text-secondary);
   font-size: 12px;
+}
+
+.settingActions {
+  display: flex;
+  justify-content: flex-end;
+  padding-top: 10px;
 }
 
 .lookupEmptyState {
@@ -911,6 +953,22 @@ h2 {
   width: 100%;
 }
 
+.workbenchSegmented {
+  width: 100%;
+  max-width: 520px;
+}
+
+.workbenchSegmented .ant-segmented-item-label {
+  min-height: 30px;
+  line-height: 30px;
+  white-space: normal;
+}
+
+.tlsPemTextarea {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: 12px;
+}
+
 .workbenchTagsSelect.ant-select-multiple .ant-select-selection-overflow {
   gap: 2px 0;
 }
@@ -953,7 +1011,8 @@ h2 {
 @media (max-width: 1180px) {
   .workbenchBody,
   .workbenchBodyWideInspector,
-  .settingRow {
+  .settingRow,
+  .serviceSettingsForm.ant-form .ant-form-item {
     grid-template-columns: minmax(0, 1fr);
   }
 

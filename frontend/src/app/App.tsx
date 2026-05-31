@@ -73,6 +73,7 @@ const notificationConfig = {
 const defaultPreferences: DesktopPreferences = {
   closeBehavior: "ask",
   language: "system",
+  historyEnabled: true,
   startAtLogin: false,
   startAtLoginSupported: false,
   traySupported: false,
@@ -119,7 +120,7 @@ function needsRuntimeRestart(current: ConfigDocument | null, saved: ConfigDocume
     || currentServer.listen !== savedServer.listen
     || currentServer.certFile !== savedServer.certFile
     || currentServer.keyFile !== savedServer.keyFile
-    || currentServer.path !== savedServer.path;
+    || (currentServer.mode === "doh" && currentServer.path !== savedServer.path);
 }
 
 function hasConfigChanges(current: ConfigDocument | null, saved: ConfigDocument | null): boolean {
