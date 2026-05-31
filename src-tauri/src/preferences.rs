@@ -56,6 +56,7 @@ fn default_desktop_preferences() -> DesktopPreferences {
     DesktopPreferences {
         close_behavior: CLOSE_BEHAVIOR_ASK.into(),
         language: LANGUAGE_SYSTEM.into(),
+        history_enabled: true,
         start_at_login: false,
         start_at_login_supported: start_at_login_supported(),
         tray_supported: true,

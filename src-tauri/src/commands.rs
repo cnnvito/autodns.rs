@@ -1,7 +1,9 @@
+use crate::certificates;
+use crate::config::core_config_from_desktop;
 use crate::desktop::{
-    ApplyConfigResult, ConfigDocument, DesktopConfig, DesktopPreferences, DesktopStatus,
-    DnsHistoryList, DnsHistoryOverview, DnsHistoryTopDomain, DnsLookupResult, SystemDnsSettings,
-    SystemDnsStatus,
+    ApplyConfigResult, CertificateDefaults, ConfigDocument, DesktopConfig, DesktopPreferences,
+    DesktopStatus, DnsHistoryList, DnsHistoryOverview, DnsHistoryTopDomain, DnsLookupResult,
+    GenerateCertificateRequest, GeneratedCertificate, SystemDnsSettings, SystemDnsStatus,
 };
 use crate::preferences;
 use crate::service::DesktopService;
@@ -200,6 +202,13 @@ pub fn validate_config(
 }
 
 #[tauri::command]
+pub fn validate_server_certificate(config: DesktopConfig) -> Result<(), CommandError> {
+    let mut core = core_config_from_desktop(config);
+    core.apply_defaults();
+    crate::dns::validate_server_tls_config(&core.server).map_err(to_command_error)
+}
+
+#[tauri::command]
 pub async fn apply_config(
     app: AppHandle,
     service: State<'_, DesktopService>,
@@ -222,8 +231,29 @@ pub fn save_preferences(
     prefs: DesktopPreferences,
 ) -> Result<DesktopPreferences, CommandError> {
     let saved = preferences::save_desktop_preferences(prefs).map_err(to_command_error)?;
+    app.state::<DesktopService>()
+        .set_dns_history_enabled(saved.history_enabled);
     crate::refresh_tray_state(&app);
     Ok(saved)
+}
+
+#[tauri::command]
+pub fn certificate_defaults() -> Result<CertificateDefaults, CommandError> {
+    certificates::certificate_defaults().map_err(to_command_error)
+}
+
+#[tauri::command]
+pub async fn generate_server_certificate(
+    app: AppHandle,
+    request: GenerateCertificateRequest,
+) -> Result<GeneratedCertificate, CommandError> {
+    let generated =
+        tauri::async_runtime::spawn_blocking(move || certificates::generate_certificate(request))
+            .await
+            .map_err(|err| command_error_from_message(&err.to_string()))?
+            .map_err(to_command_error)?;
+    crate::refresh_tray_state(&app);
+    Ok(generated)
 }
 
 #[tauri::command]

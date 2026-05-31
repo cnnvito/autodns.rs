@@ -70,8 +70,11 @@ pub struct DesktopConfig {
 pub struct DesktopServerConfig {
     pub mode: String,
     pub listen: String,
+    pub tls_source: String,
     pub cert_file: String,
     pub key_file: String,
+    pub cert_pem: String,
+    pub key_pem: String,
     pub path: String,
 }
 
@@ -164,6 +167,40 @@ pub struct DesktopLogConfig {
 pub struct ConfigDocument {
     pub path: String,
     pub config: DesktopConfig,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CertificateDefaults {
+    pub common_name: String,
+    pub organization: String,
+    pub domains: Vec<String>,
+    pub ip_addresses: Vec<String>,
+    pub valid_days: u32,
+    pub output_dir: String,
+    pub file_prefix: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GenerateCertificateRequest {
+    pub common_name: String,
+    pub organization: String,
+    pub domains: Vec<String>,
+    pub ip_addresses: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub valid_days: Option<u32>,
+    pub output_dir: String,
+    pub file_prefix: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GeneratedCertificate {
+    pub ca_cert_file: String,
+    pub ca_key_file: String,
+    pub cert_file: String,
+    pub key_file: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -335,12 +372,18 @@ pub struct DesktopPreferences {
     pub close_behavior: String,
     #[serde(default)]
     pub language: String,
+    #[serde(default = "default_history_enabled")]
+    pub history_enabled: bool,
     pub start_at_login: bool,
     pub start_at_login_supported: bool,
     pub tray_supported: bool,
     pub tray_message: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub window: Option<DesktopWindowState>,
+}
+
+fn default_history_enabled() -> bool {
+    true
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]

@@ -24,6 +24,7 @@ moka = { version = "0.12", default-features = false, features = ["sync"] }
 parking_lot = "0.12"
 quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-ring"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "socks"] }
+rcgen = "0.12"
 rusqlite = { version = "0.39", features = ["bundled"] }
 rustls-pemfile = "2"
 serde = { version = "1", features = ["derive"] }
@@ -33,6 +34,7 @@ tauri = { version = "2", features = ["image-png", "tray-icon"] }
 tauri-plugin-dialog = "2"
 tauri-plugin-single-instance = "2"
 thiserror = "2"
+time = "0.3"
 tokio = { version = "1", features = ["io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }
 tokio-rustls = "0.26"
 url = "2"

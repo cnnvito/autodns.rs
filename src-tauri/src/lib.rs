@@ -1,3 +1,4 @@
+mod certificates;
 mod commands;
 mod config;
 mod desktop;
@@ -125,9 +126,12 @@ pub fn run() {
             clear_dns_history,
             managed_config,
             validate_config,
+            validate_server_certificate,
             apply_config,
             load_preferences,
             save_preferences,
+            certificate_defaults,
+            generate_server_certificate,
             system_dns_status,
             save_system_dns_settings,
             apply_system_dns,

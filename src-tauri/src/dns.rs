@@ -1,6 +1,6 @@
 use crate::config::{
     parse_bootstrap_dns_servers, parse_go_duration, parse_upstream_endpoint, CoreConfig,
-    CoreUpstreamConfig,
+    CoreServerConfig, CoreUpstreamConfig,
 };
 use crate::desktop::{
     localized_error_message, DnsLookupRecord, DnsLookupResult, HealthState, ProxyHealth,
@@ -26,8 +26,8 @@ use reqwest::header::{ACCEPT, CONTENT_TYPE};
 use std::collections::{HashMap, HashSet};
 use std::error::Error as StdError;
 use std::fs::File;
-use std::io::BufReader;
 use std::io::ErrorKind;
+use std::io::{BufReader, Cursor};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::atomic::{AtomicU32, AtomicU8, Ordering};
 use std::sync::{Arc, OnceLock};
@@ -465,7 +465,7 @@ pub async fn start_runtime(
             ))
         }
         "dot" => {
-            let tls = load_server_tls(&cfg.server.cert_file, &cfg.server.key_file)?;
+            let tls = load_server_tls(&cfg.server)?;
             let listener = TcpListener::bind(&cfg.server.listen)
                 .await
                 .map_err(|err| listener_bind_error("DoT", &cfg.server.listen, err))?;
@@ -480,7 +480,7 @@ pub async fn start_runtime(
             ))
         }
         "doh" => {
-            let tls = load_server_tls(&cfg.server.cert_file, &cfg.server.key_file)?;
+            let tls = load_server_tls(&cfg.server)?;
             let listener = TcpListener::bind(&cfg.server.listen)
                 .await
                 .map_err(|err| listener_bind_error("DoH", &cfg.server.listen, err))?;
@@ -561,9 +561,12 @@ fn spawn_health_tasks(
 fn same_server_identity(a: &CoreConfig, b: &CoreConfig) -> bool {
     a.server.mode == b.server.mode
         && a.server.listen == b.server.listen
+        && a.server.tls_source == b.server.tls_source
         && a.server.cert_file == b.server.cert_file
         && a.server.key_file == b.server.key_file
-        && a.server.path == b.server.path
+        && a.server.cert_pem == b.server.cert_pem
+        && a.server.key_pem == b.server.key_pem
+        && (a.server.mode != "doh" || a.server.path == b.server.path)
 }
 
 fn build_resolver(
@@ -760,19 +763,41 @@ fn build_http_client(
     Ok(builder.build()?)
 }
 
-fn load_server_tls(cert_file: &str, key_file: &str) -> Result<Arc<RustlsServerConfig>> {
-    let certs = {
-        let file =
-            File::open(cert_file).with_context(|| format!("open certificate file: {cert_file}"))?;
-        rustls_pemfile::certs(&mut BufReader::new(file))
-            .collect::<std::result::Result<Vec<_>, _>>()?
+pub fn validate_server_tls_config(server: &CoreServerConfig) -> Result<()> {
+    load_server_tls(server).map(|_| ())
+}
+
+fn load_server_tls(server: &CoreServerConfig) -> Result<Arc<RustlsServerConfig>> {
+    let (certs, key) = match server.tls_source.as_str() {
+        "file" | "" => {
+            let cert_file = &server.cert_file;
+            let key_file = &server.key_file;
+            let certs = {
+                let file = File::open(cert_file)
+                    .with_context(|| format!("open certificate file: {cert_file}"))?;
+                rustls_pemfile::certs(&mut BufReader::new(file))
+                    .collect::<std::result::Result<Vec<_>, _>>()?
+            };
+            let key = {
+                let file = File::open(key_file)
+                    .with_context(|| format!("open private key file: {key_file}"))?;
+                rustls_pemfile::private_key(&mut BufReader::new(file))?
+                    .ok_or_else(|| anyhow!("private key file does not contain a supported key"))?
+            };
+            (certs, key)
+        }
+        "inline" => {
+            let certs = rustls_pemfile::certs(&mut Cursor::new(server.cert_pem.as_bytes()))
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+            let key = rustls_pemfile::private_key(&mut Cursor::new(server.key_pem.as_bytes()))?
+                .ok_or_else(|| anyhow!("private key PEM does not contain a supported key"))?;
+            (certs, key)
+        }
+        _ => return Err(anyhow!("server.tls_source must be one of file,inline")),
     };
-    let key = {
-        let file =
-            File::open(key_file).with_context(|| format!("open private key file: {key_file}"))?;
-        rustls_pemfile::private_key(&mut BufReader::new(file))?
-            .ok_or_else(|| anyhow!("private key file does not contain a supported key"))?
-    };
+    if certs.is_empty() {
+        return Err(anyhow!("certificate PEM does not contain a certificate"));
+    }
     Ok(Arc::new(
         RustlsServerConfig::builder()
             .with_no_client_auth()

@@ -21,9 +21,15 @@ pub struct CoreServerConfig {
     pub mode: String,
     pub listen: String,
     #[serde(default)]
+    pub tls_source: String,
+    #[serde(default)]
     pub cert_file: String,
     #[serde(default)]
     pub key_file: String,
+    #[serde(default)]
+    pub cert_pem: String,
+    #[serde(default)]
+    pub key_pem: String,
     #[serde(default)]
     pub path: String,
 }
@@ -163,8 +169,11 @@ pub fn desktop_config_from_core(cfg: &CoreConfig) -> DesktopConfig {
         server: DesktopServerConfig {
             mode: cfg.server.mode.clone(),
             listen: cfg.server.listen.clone(),
+            tls_source: cfg.server.tls_source.clone(),
             cert_file: cfg.server.cert_file.clone(),
             key_file: cfg.server.key_file.clone(),
+            cert_pem: cfg.server.cert_pem.clone(),
+            key_pem: cfg.server.key_pem.clone(),
             path: cfg.server.path.clone(),
         },
         resolver: DesktopResolverConfig {
@@ -217,8 +226,11 @@ pub fn core_config_from_desktop(cfg: DesktopConfig) -> CoreConfig {
         server: CoreServerConfig {
             mode: cfg.server.mode,
             listen: cfg.server.listen,
+            tls_source: cfg.server.tls_source,
             cert_file: cfg.server.cert_file,
             key_file: cfg.server.key_file,
+            cert_pem: cfg.server.cert_pem,
+            key_pem: cfg.server.key_pem,
             path: cfg.server.path,
         },
         resolver: CoreResolverConfig {
@@ -401,6 +413,9 @@ fn endpoint_parts_from_raw(raw: &str) -> EndpointParts {
 
 impl CoreConfig {
     pub fn apply_defaults(&mut self) {
+        if self.server.tls_source.is_empty() {
+            self.server.tls_source = "file".into();
+        }
         if self.server.mode == "doh" && self.server.path.is_empty() {
             self.server.path = "/dns-query".into();
         }
@@ -461,31 +476,21 @@ impl CoreConfig {
         }
         match self.server.mode.as_str() {
             "doh" => {
-                if self.server.cert_file.is_empty() || self.server.key_file.is_empty() {
-                    return Err(anyhow!(
-                        "server.cert_file and server.key_file are required for doh mode"
-                    ));
-                }
+                self.validate_server_tls("doh")?;
                 if self.server.path.is_empty() {
                     return Err(anyhow!("server.path is required for doh mode"));
                 }
             }
             "dot" => {
-                if self.server.cert_file.is_empty() || self.server.key_file.is_empty() {
-                    return Err(anyhow!(
-                        "server.cert_file and server.key_file are required for dot mode"
-                    ));
-                }
-                if !self.server.path.is_empty() {
-                    return Err(anyhow!("server.path is only valid for doh mode"));
-                }
+                self.validate_server_tls("dot")?;
             }
             _ => {
-                if !self.server.cert_file.is_empty() || !self.server.key_file.is_empty() {
+                if !self.server.cert_file.is_empty()
+                    || !self.server.key_file.is_empty()
+                    || !self.server.cert_pem.is_empty()
+                    || !self.server.key_pem.is_empty()
+                {
                     return Err(anyhow!("TLS fields are only valid for doh or dot mode"));
-                }
-                if !self.server.path.is_empty() {
-                    return Err(anyhow!("server.path is only valid for doh mode"));
                 }
             }
         }
@@ -605,6 +610,27 @@ impl CoreConfig {
             "debug" | "info" | "warn" | "error" => Ok(()),
             _ => Err(anyhow!("log.level must be one of debug,info,warn,error")),
         }
+    }
+
+    fn validate_server_tls(&self, mode: &str) -> Result<()> {
+        match self.server.tls_source.as_str() {
+            "file" => {
+                if self.server.cert_file.is_empty() || self.server.key_file.is_empty() {
+                    return Err(anyhow!(
+                        "server.cert_file and server.key_file are required for {mode} mode"
+                    ));
+                }
+            }
+            "inline" => {
+                if self.server.cert_pem.trim().is_empty() || self.server.key_pem.trim().is_empty() {
+                    return Err(anyhow!(
+                        "server.cert_pem and server.key_pem are required for {mode} mode"
+                    ));
+                }
+            }
+            _ => return Err(anyhow!("server.tls_source must be one of file,inline")),
+        }
+        Ok(())
     }
 }
 

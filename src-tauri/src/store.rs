@@ -204,8 +204,11 @@ fn migrate(conn: &Connection) -> Result<()> {
             id INTEGER PRIMARY KEY CHECK (id = 1),
             server_mode TEXT NOT NULL,
             server_listen TEXT NOT NULL,
+            server_tls_source TEXT NOT NULL DEFAULT 'file',
             server_cert_file TEXT NOT NULL DEFAULT '',
             server_key_file TEXT NOT NULL DEFAULT '',
+            server_cert_pem TEXT NOT NULL DEFAULT '',
+            server_key_pem TEXT NOT NULL DEFAULT '',
             server_path TEXT NOT NULL DEFAULT '',
             service_enabled INTEGER NOT NULL DEFAULT 0,
             bootstrap_dns TEXT NOT NULL DEFAULT '["1.1.1.1:53","8.8.8.8:53"]',
@@ -348,6 +351,24 @@ fn migrate(conn: &Connection) -> Result<()> {
         "service_enabled",
         "INTEGER NOT NULL DEFAULT 0",
     )?;
+    add_column_if_missing(
+        conn,
+        "app_settings",
+        "server_tls_source",
+        "TEXT NOT NULL DEFAULT 'file'",
+    )?;
+    add_column_if_missing(
+        conn,
+        "app_settings",
+        "server_cert_pem",
+        "TEXT NOT NULL DEFAULT ''",
+    )?;
+    add_column_if_missing(
+        conn,
+        "app_settings",
+        "server_key_pem",
+        "TEXT NOT NULL DEFAULT ''",
+    )?;
     add_column_if_missing(conn, "proxies", "protocol", "TEXT NOT NULL DEFAULT ''")?;
     add_column_if_missing(conn, "proxies", "host", "TEXT NOT NULL DEFAULT ''")?;
     add_column_if_missing(conn, "proxies", "port", "INTEGER")?;
@@ -443,20 +464,24 @@ fn replace_config(conn: &mut Connection, config: DesktopConfig) -> Result<()> {
     tx.execute(
         r#"
         INSERT INTO app_settings (
-            id, server_mode, server_listen, server_cert_file, server_key_file, server_path,
+            id, server_mode, server_listen, server_tls_source, server_cert_file, server_key_file,
+            server_cert_pem, server_key_pem, server_path,
             service_enabled, bootstrap_dns, default_proxy, resolver_timeout, ipv6_enabled,
             cache_enabled, cache_max_entries, cache_max_entry_size, cache_min_ttl, cache_max_ttl,
             cache_negative_ttl, cache_eviction_policy,
             healthcheck_enabled, healthcheck_interval, healthcheck_timeout, healthcheck_domain,
             healthcheck_failure_threshold, healthcheck_recovery_threshold, log_level
         )
-        VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         "#,
         params![
             config.server.mode,
             config.server.listen,
+            config.server.tls_source,
             config.server.cert_file,
             config.server.key_file,
+            config.server.cert_pem,
+            config.server.key_pem,
             config.server.path,
             bool_to_i64(service_enabled),
             serde_json::to_string(&config.resolver.bootstrap_dns)
@@ -643,7 +668,8 @@ fn load_settings(conn: &Connection) -> Result<DesktopConfig> {
         .query_row(
             r#"
         SELECT
-            server_mode, server_listen, server_cert_file, server_key_file, server_path,
+            server_mode, server_listen, server_tls_source, server_cert_file, server_key_file,
+            server_cert_pem, server_key_pem, server_path,
             bootstrap_dns, default_proxy, resolver_timeout, ipv6_enabled,
             cache_enabled, cache_max_entries, cache_max_entry_size, cache_min_ttl, cache_max_ttl,
             cache_negative_ttl, cache_eviction_policy,
@@ -657,15 +683,18 @@ fn load_settings(conn: &Connection) -> Result<DesktopConfig> {
                     server: crate::desktop::DesktopServerConfig {
                         mode: row.get(0)?,
                         listen: row.get(1)?,
-                        cert_file: row.get(2)?,
-                        key_file: row.get(3)?,
-                        path: row.get(4)?,
+                        tls_source: row.get(2)?,
+                        cert_file: row.get(3)?,
+                        key_file: row.get(4)?,
+                        cert_pem: row.get(5)?,
+                        key_pem: row.get(6)?,
+                        path: row.get(7)?,
                     },
                     resolver: crate::desktop::DesktopResolverConfig {
                         upstreams: Vec::new(),
                         proxies: Vec::new(),
                         bootstrap_dns: {
-                            let raw: String = row.get(5)?;
+                            let raw: String = row.get(8)?;
                             let parsed = json_vec_from_sql(&raw)?;
                             if parsed.is_empty() {
                                 Vec::new()
@@ -673,33 +702,33 @@ fn load_settings(conn: &Connection) -> Result<DesktopConfig> {
                                 parsed
                             }
                         },
-                        default_proxy: row.get(6)?,
+                        default_proxy: row.get(9)?,
                         hosts: Vec::new(),
                         host_statuses: Vec::new(),
                         routes: Vec::new(),
                         route_statuses: Vec::new(),
-                        timeout: row.get(7)?,
-                        ipv6_enabled: int_to_bool(row.get(8)?),
+                        timeout: row.get(10)?,
+                        ipv6_enabled: int_to_bool(row.get(11)?),
                     },
                     cache: crate::desktop::DesktopCacheConfig {
-                        enabled: int_to_bool(row.get(9)?),
-                        max_entries: i64_to_usize(row.get(10)?)?,
-                        max_entry_size: i64_to_usize(row.get(11)?)?,
-                        min_ttl: i64_to_u32(row.get(12)?)?,
-                        max_ttl: i64_to_u32(row.get(13)?)?,
-                        negative_ttl: i64_to_u32(row.get(14)?)?,
-                        eviction_policy: row.get(15)?,
+                        enabled: int_to_bool(row.get(12)?),
+                        max_entries: i64_to_usize(row.get(13)?)?,
+                        max_entry_size: i64_to_usize(row.get(14)?)?,
+                        min_ttl: i64_to_u32(row.get(15)?)?,
+                        max_ttl: i64_to_u32(row.get(16)?)?,
+                        negative_ttl: i64_to_u32(row.get(17)?)?,
+                        eviction_policy: row.get(18)?,
                     },
                     healthcheck: crate::desktop::DesktopHealthcheckConfig {
-                        enabled: int_to_bool(row.get(16)?),
-                        interval: row.get(17)?,
-                        timeout: row.get(18)?,
-                        domain: row.get(19)?,
-                        failure_threshold: i64_to_u32(row.get(20)?)?,
-                        recovery_threshold: i64_to_u32(row.get(21)?)?,
+                        enabled: int_to_bool(row.get(19)?),
+                        interval: row.get(20)?,
+                        timeout: row.get(21)?,
+                        domain: row.get(22)?,
+                        failure_threshold: i64_to_u32(row.get(23)?)?,
+                        recovery_threshold: i64_to_u32(row.get(24)?)?,
                     },
                     log: crate::desktop::DesktopLogConfig {
-                        level: row.get(22)?,
+                        level: row.get(25)?,
                     },
                 })
             },
@@ -908,7 +937,13 @@ fn validate_store_config(config: &DesktopConfig) -> Result<()> {
             })
         })
         .collect();
-    validate_desktop_config(runtime)
+    validate_desktop_config(runtime.clone())?;
+    if matches!(runtime.server.mode.as_str(), "doh" | "dot") {
+        let mut core = core_config_from_desktop(runtime);
+        core.apply_defaults();
+        crate::dns::validate_server_tls_config(&core.server)?;
+    }
+    Ok(())
 }
 
 fn parse_host_rule(raw: &str) -> Result<(String, String)> {

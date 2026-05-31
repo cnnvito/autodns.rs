@@ -7,10 +7,10 @@ use crate::dns::{
     build_proxy_health, build_upstream_health, mark_proxies_unknown, mark_upstreams_unknown,
     start_runtime, HealthListener, RunningRuntime,
 };
-use crate::history::DnsHistoryRecorder;
+use crate::history::{DnsHistoryBackendRef, DnsHistoryRecorder, SqliteDnsHistoryBackend};
 use crate::logging::LogBuffer;
 use crate::store::ConfigStore;
-use crate::system_dns;
+use crate::{preferences, system_dns};
 use anyhow::{anyhow, Result};
 use chrono::Utc;
 use parking_lot::Mutex;
@@ -24,6 +24,7 @@ pub struct DesktopService {
     store: Mutex<Option<ConfigStore>>,
     system_dns_adapters: Mutex<SystemDnsAdapterCache>,
     status_listener: Mutex<Option<HealthListener>>,
+    history_backend: Mutex<Option<DnsHistoryBackendRef>>,
     history: Mutex<Option<DnsHistoryRecorder>>,
     logs: LogBuffer,
     allow_quit: AtomicBool,
@@ -48,6 +49,7 @@ impl DesktopService {
             store: Mutex::new(None),
             system_dns_adapters: Mutex::new(SystemDnsAdapterCache::default()),
             status_listener: Mutex::new(None),
+            history_backend: Mutex::new(None),
             history: Mutex::new(None),
             logs: LogBuffer::new(1000),
             allow_quit: AtomicBool::new(false),
@@ -57,10 +59,16 @@ impl DesktopService {
     pub fn initialize(&self) -> Result<()> {
         let store = ConfigStore::open_default()?;
         let store_path = store.path().to_string_lossy().to_string();
-        let history = DnsHistoryRecorder::start(store.clone(), self.logs.clone());
+        let history_backend = SqliteDnsHistoryBackend::shared(store.clone());
+        let history_enabled = preferences::load_desktop_preferences()
+            .map(|prefs| prefs.history_enabled)
+            .unwrap_or(true);
+        let history =
+            DnsHistoryRecorder::start(history_backend.clone(), self.logs.clone(), history_enabled);
         let mut inner = self.inner.lock();
         inner.status.config_path = String::new();
         *self.store.lock() = Some(store);
+        *self.history_backend.lock() = Some(history_backend);
         *self.history.lock() = Some(history);
         self.logs
             .push("info", format!("desktop database ready: {store_path}"));
@@ -196,8 +204,8 @@ impl DesktopService {
         limit: usize,
         offset: usize,
     ) -> Result<DnsHistoryList> {
-        self.store()?
-            .list_dns_history(&domain, &status_filter, &window, limit, offset)
+        self.history_backend()?
+            .list(&domain, &status_filter, &window, limit, offset)
     }
 
     pub fn dns_history_top_domains(
@@ -207,16 +215,22 @@ impl DesktopService {
         status_filter: String,
         window: String,
     ) -> Result<Vec<DnsHistoryTopDomain>> {
-        self.store()?
-            .dns_history_top_domains(limit, &domain, &status_filter, &window)
+        self.history_backend()?
+            .top_domains(limit, &domain, &status_filter, &window)
     }
 
     pub fn dns_history_overview(&self) -> Result<DnsHistoryOverview> {
-        self.store()?.dns_history_overview()
+        self.history_backend()?.overview()
     }
 
     pub fn clear_dns_history(&self) -> Result<usize> {
-        self.store()?.clear_dns_history()
+        self.history_backend()?.clear()
+    }
+
+    pub fn set_dns_history_enabled(&self, enabled: bool) {
+        if let Some(history) = self.history.lock().as_ref() {
+            history.set_enabled(enabled);
+        }
     }
 
     pub fn managed_config(&self) -> Result<ConfigDocument> {
@@ -347,6 +361,13 @@ impl DesktopService {
             .lock()
             .clone()
             .unwrap_or_else(DnsHistoryRecorder::disabled)
+    }
+
+    fn history_backend(&self) -> Result<DnsHistoryBackendRef> {
+        self.history_backend
+            .lock()
+            .clone()
+            .ok_or_else(|| anyhow!("dns history backend is not initialized"))
     }
 
     fn cached_system_dns_adapters(&self) -> (Vec<SystemDnsAdapter>, Option<String>) {
