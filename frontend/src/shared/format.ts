@@ -29,10 +29,11 @@ export function localizedMessageText(message: LocalizedMessage | undefined, tran
     return "";
   }
   if (translate) {
-    const key = `errors.${message.code}`;
-    const translated = translate(key, message.values);
-    if (translated && translated !== key) {
-      return translated;
+    for (const key of [`errors.${message.code}`, message.code]) {
+      const translated = translate(key, message.values);
+      if (translated && translated !== key) {
+        return translated;
+      }
     }
   }
   return interpolateFallback(message.message || message.code, message.values);
