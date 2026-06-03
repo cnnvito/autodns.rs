@@ -2663,6 +2663,9 @@ impl HealthMonitor {
         let Some(state) = self.states.lock().get(name).cloned() else {
             return interval;
         };
+        if !state.healthy && state.recovery_streak > 0 {
+            return Duration::ZERO;
+        }
         if state.healthy || state.probe_failure_streak == 0 {
             return interval;
         }
@@ -4020,6 +4023,35 @@ mod tests {
         let snapshot = health.snapshot();
         assert!(snapshot.healthy("upstream"));
         assert!(!snapshot.should_skip_for_query("upstream"));
+    }
+
+    #[test]
+    fn health_requires_configured_recovery_successes() {
+        let health = HealthMonitor::new(true, 1, 2, vec!["upstream".to_string()]);
+
+        health.record_failure("upstream", FailureKind::Transport, "failure");
+        assert!(!health.snapshot().healthy("upstream"));
+
+        health.record_probe_success("upstream", Duration::from_millis(8));
+        assert!(!health.snapshot().healthy("upstream"));
+
+        health.record_probe_success("upstream", Duration::from_millis(9));
+        assert!(health.snapshot().healthy("upstream"));
+    }
+
+    #[test]
+    fn health_recovery_probe_does_not_wait_full_interval() {
+        let health = HealthMonitor::new(true, 1, 2, vec!["upstream".to_string()]);
+        let interval = Duration::from_secs(30);
+
+        health.record_failure("upstream", FailureKind::Transport, "failure");
+        assert_eq!(health.probe_delay("upstream", interval), interval);
+
+        health.record_probe_success("upstream", Duration::from_millis(8));
+        assert_eq!(health.probe_delay("upstream", interval), Duration::ZERO);
+
+        health.record_probe_success("upstream", Duration::from_millis(9));
+        assert_eq!(health.probe_delay("upstream", interval), interval);
     }
 
     #[test]

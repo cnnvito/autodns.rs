@@ -1,5 +1,6 @@
 import { listen } from "@tauri-apps/api/event";
 import { getVersion } from "@tauri-apps/api/app";
+import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
 import {
   ApiOutlined,
   CheckCircleOutlined,
@@ -39,7 +40,7 @@ import {
 } from "../shared/api";
 import { emptyConfigValidation, flattenValidationMessages, hasValidationErrors, validateDesktopConfig } from "../features/config/validation";
 import { errorMessage, formatDate, localizedMessageText } from "../shared/format";
-import type { ConfigDocument, DesktopPreferences, DesktopStatus, SystemDnsSettings, SystemDnsStatus } from "../shared/types";
+import type { ConfigDocument, DesktopPreferences, DesktopStatus, HealthState, SystemDnsSettings, SystemDnsStatus } from "../shared/types";
 import type { SettingsSection } from "../pages/SettingsPage";
 import { LoadingOverlay } from "../shared/LoadingOverlay";
 import {
@@ -160,6 +161,8 @@ export function App() {
   const [closePromptOpen, setClosePromptOpen] = useState(false);
   const [appVersion, setAppVersion] = useState("");
   const lastRuntimeError = useRef("");
+  const lastUpstreamHealth = useRef<Map<string, HealthState> | null>(null);
+  const systemNotificationPermission = useRef<boolean | null>(null);
   const pendingSystemDnsSave = useRef(0);
   const lastSystemDnsSaveId = useRef(0);
   const systemDnsLoadingRef = useRef(false);
@@ -211,6 +214,24 @@ export function App() {
   const notifyError = useCallback((title: string, err: unknown) => {
     notify("error", title, translateError(err));
   }, [notify, translateError]);
+
+  const notifySystem = useCallback(async (title: string, body: string) => {
+    try {
+      let granted = systemNotificationPermission.current;
+      if (granted === null) {
+        granted = await isPermissionGranted();
+        if (!granted) {
+          granted = await requestPermission() === "granted";
+        }
+        systemNotificationPermission.current = granted;
+      }
+      if (granted) {
+        sendNotification({ title, body });
+      }
+    } catch {
+      systemNotificationPermission.current = null;
+    }
+  }, []);
 
   async function refreshSystemDns(force = false) {
     if (systemDnsLoadingRef.current) {
@@ -317,6 +338,38 @@ export function App() {
     }
     lastRuntimeError.current = runtimeError;
   }, [notify, status?.lastError, status?.lastErrorMessage, t]);
+
+  useEffect(() => {
+    if (!status?.running) {
+      lastUpstreamHealth.current = null;
+      return;
+    }
+
+    const nextHealth = new Map(status.upstreamHealth.map((item) => [item.name, item.health]));
+    const previousHealth = lastUpstreamHealth.current;
+    if (previousHealth) {
+      for (const item of status.upstreamHealth) {
+        const previous = previousHealth.get(item.name);
+        if (previous === "healthy" && item.health === "unhealthy") {
+          const error = item.lastErrorMessage
+            ? localizedMessageText(item.lastErrorMessage, (key, values) => t(key, values))
+            : item.lastError || "";
+          void notifySystem(
+            t("notifications.upstreamUnhealthy"),
+            error
+              ? t("notifications.upstreamUnhealthyDescriptionWithError", { name: item.name, error })
+              : t("notifications.upstreamUnhealthyDescription", { name: item.name })
+          );
+        } else if (previous === "unhealthy" && item.health === "healthy") {
+          void notifySystem(
+            t("notifications.upstreamRecovered"),
+            t("notifications.upstreamRecoveredDescription", { name: item.name })
+          );
+        }
+      }
+    }
+    lastUpstreamHealth.current = nextHealth;
+  }, [notifySystem, status?.running, status?.upstreamHealth, t]);
 
   useEffect(() => {
     let unlisten: (() => void) | undefined;

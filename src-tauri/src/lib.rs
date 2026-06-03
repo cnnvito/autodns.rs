@@ -58,6 +58,7 @@ pub fn run() {
             let _ = reveal_main_window(app);
         }))
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_notification::init())
         .manage(DesktopService::new())
         .manage(WindowReadyState::default())
         .manage(WindowStateSaveThrottle::default())
