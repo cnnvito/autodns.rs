@@ -54,6 +54,8 @@ export const zhCN = {
       serverListenRequired: "监听地址不能为空。"
     },
     dns: {
+      serviceNotRunning: "DNS 服务未运行。",
+      upstreamNotFound: "运行中的配置里找不到上游 {{name}}。",
       listenerAddressInUse: "{{protocol}} 监听地址 {{listen}} 已被占用。请停止占用该端口的程序，或在偏好设置里更换监听端口。",
       listenerPermissionDenied: "{{protocol}} 监听地址 {{listen}} 权限不足。监听 53 等低端口通常需要管理员权限。",
       listenerBindFailed: "{{protocol}} 监听地址 {{listen}} 绑定失败：{{reason}}"
@@ -117,6 +119,12 @@ export const zhCN = {
     systemDnsRestored: "系统 DNS 已恢复",
     systemDnsSaveFailed: "系统 DNS 设置保存失败",
     systemDnsStatusFailed: "系统 DNS 状态读取失败",
+    upstreamCheckFailed: "上游健康检查失败",
+    upstreamCheckFailedDescription: "{{name}} 检查失败：{{error}}",
+    upstreamCheckPassed: "上游健康检查通过",
+    upstreamCheckPassedDescription: "{{name}} 可用，延迟 {{latency}} ms。",
+    upstreamCheckPassedDescriptionNoLatency: "{{name}} 可用。",
+    upstreamCheckUnavailable: "无法检查上游",
     upstreamRecovered: "DNS 上游已恢复",
     upstreamRecoveredDescription: "{{name}} 已恢复健康。",
     upstreamUnhealthy: "DNS 上游异常",
@@ -492,6 +500,8 @@ export const zhCN = {
     endpoint: "端点",
     endpointInvalid: "上游端点无效，请检查协议、主机和端口。",
     proxy: "代理",
+    checkHealth: "手动健康检查",
+    checkHealthFor: "检查 {{name}}",
     deleteUpstream: "删除上游",
     addProxy: "新增代理",
     noProxy: "还没有代理配置，上游会直接连接",

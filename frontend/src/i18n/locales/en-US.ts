@@ -55,6 +55,8 @@ export const enUS = {
       serverListenRequired: "Listen address is required."
     },
     dns: {
+      serviceNotRunning: "DNS service is not running.",
+      upstreamNotFound: "Running configuration does not include upstream {{name}}.",
       listenerAddressInUse: "{{protocol}} listen address {{listen}} is already in use. Stop the process using that port, or change the listen port in Preferences.",
       listenerPermissionDenied: "{{protocol}} listen address {{listen}} needs permission. Low ports such as 53 usually require administrator privileges.",
       listenerBindFailed: "{{protocol}} listen address {{listen}} failed to bind: {{reason}}"
@@ -118,6 +120,12 @@ export const enUS = {
     systemDnsRestored: "System DNS restored",
     systemDnsSaveFailed: "Failed to save system DNS settings",
     systemDnsStatusFailed: "Failed to read system DNS status",
+    upstreamCheckFailed: "Upstream health check failed",
+    upstreamCheckFailedDescription: "{{name}} check failed: {{error}}",
+    upstreamCheckPassed: "Upstream health check passed",
+    upstreamCheckPassedDescription: "{{name}} is available, {{latency}} ms.",
+    upstreamCheckPassedDescriptionNoLatency: "{{name}} is available.",
+    upstreamCheckUnavailable: "Cannot check upstream",
     upstreamRecovered: "DNS upstream recovered",
     upstreamRecoveredDescription: "{{name}} is healthy again.",
     upstreamUnhealthy: "DNS upstream unhealthy",
@@ -493,6 +501,8 @@ export const enUS = {
     endpoint: "Endpoint",
     endpointInvalid: "Upstream endpoint is invalid. Check protocol, host, and port.",
     proxy: "Proxy",
+    checkHealth: "Check health",
+    checkHealthFor: "Check {{name}}",
     deleteUpstream: "Delete upstream",
     addProxy: "Add proxy",
     noProxy: "No proxy configured. Upstreams will connect directly.",

@@ -1,7 +1,8 @@
+use crate::config::parse_go_duration;
 use crate::desktop::{
     localized_error_message, ApplyConfigAction, ApplyConfigResult, ConfigDocument, DesktopConfig,
     DesktopStatus, DnsHistoryList, DnsHistoryOverview, DnsHistoryTopDomain, DnsLookupResult,
-    SystemDnsAdapter, SystemDnsSettings, SystemDnsStatus,
+    SystemDnsAdapter, SystemDnsSettings, SystemDnsStatus, UpstreamHealthCheckResult,
 };
 use crate::dns::{
     build_proxy_health, build_upstream_health, mark_proxies_unknown, mark_upstreams_unknown,
@@ -18,6 +19,7 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
 };
+use std::time::Duration;
 
 pub struct DesktopService {
     inner: Mutex<ServiceState>,
@@ -194,6 +196,51 @@ impl DesktopService {
                 .resolver()
         };
         resolver.lookup(&domain, &record_type).await
+    }
+
+    pub async fn check_upstream_health(
+        &self,
+        upstream_name: String,
+    ) -> Result<UpstreamHealthCheckResult> {
+        let (resolver, cfg) = {
+            let inner = self.inner.lock();
+            let runtime = inner
+                .runtime
+                .as_ref()
+                .ok_or_else(|| anyhow!("DNS service is not running"))?;
+            let view = runtime.view();
+            if !view
+                .config
+                .resolver
+                .upstreams
+                .iter()
+                .any(|item| item.name == upstream_name)
+            {
+                return Err(anyhow!("upstream not found: {upstream_name}"));
+            }
+            (runtime.resolver(), view.config)
+        };
+        let domain = if cfg.healthcheck.domain.is_empty() {
+            ".".to_string()
+        } else {
+            cfg.healthcheck.domain.clone()
+        };
+        let timeout = parse_go_duration(&cfg.healthcheck.timeout).unwrap_or(Duration::from_secs(2));
+        let success = resolver
+            .check_upstream_health(&upstream_name, &domain, timeout)
+            .await?;
+        let status = self.status();
+        let upstream = status
+            .upstream_health
+            .iter()
+            .find(|item| item.name == upstream_name)
+            .cloned()
+            .ok_or_else(|| anyhow!("upstream not found: {upstream_name}"))?;
+        Ok(UpstreamHealthCheckResult {
+            success,
+            upstream,
+            status,
+        })
     }
 
     pub fn list_dns_history(

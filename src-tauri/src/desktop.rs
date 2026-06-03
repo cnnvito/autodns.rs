@@ -350,6 +350,14 @@ pub struct UpstreamHealth {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct UpstreamHealthCheckResult {
+    pub success: bool,
+    pub upstream: UpstreamHealth,
+    pub status: DesktopStatus,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ProxyHealth {
     pub name: String,
     pub endpoint: String,

@@ -19,7 +19,8 @@ import type {
   ProxyConfig,
   SystemDnsSettings,
   SystemDnsStatus,
-  UpstreamConfig
+  UpstreamConfig,
+  UpstreamHealthCheckResult
 } from "./types";
 
 const emptyStatus: DesktopStatus = {
@@ -83,6 +84,15 @@ export function normalizeStatus(status: DesktopStatus): DesktopStatus {
 
 export async function clearDnsCache(): Promise<number> {
   return invoke<number>("clear_dns_cache");
+}
+
+export async function checkUpstreamHealth(upstreamName: string): Promise<UpstreamHealthCheckResult> {
+  const result = await invoke<UpstreamHealthCheckResult>("check_upstream_health", { upstreamName });
+  return {
+    success: Boolean(result.success),
+    upstream: result.upstream,
+    status: normalizeStatus(result.status ?? emptyStatus)
+  };
 }
 
 export async function lookupDomain(domain: string, recordType: string): Promise<DnsLookupResult> {

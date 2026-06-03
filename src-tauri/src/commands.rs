@@ -4,6 +4,7 @@ use crate::desktop::{
     ApplyConfigResult, CertificateDefaults, ConfigDocument, DesktopConfig, DesktopPreferences,
     DesktopStatus, DnsHistoryList, DnsHistoryOverview, DnsHistoryTopDomain, DnsLookupResult,
     GenerateCertificateRequest, GeneratedCertificate, SystemDnsSettings, SystemDnsStatus,
+    UpstreamHealthCheckResult,
 };
 use crate::preferences;
 use crate::service::DesktopService;
@@ -28,11 +29,15 @@ fn command_error_from_message(message: &str) -> CommandError {
     let mut values = BTreeMap::new();
     let code = match message {
         "server.listen is required" => "config.serverListenRequired",
+        "DNS service is not running" => "dns.serviceNotRunning",
         "system DNS takeover is disabled" => "systemDns.takeoverDisabled",
         "no network adapter is selected" => "systemDns.noAdapterSelected",
         "target DNS server is empty" => "systemDns.emptyTargetServer",
         _ => {
-            if let Some((protocol, listen)) =
+            if let Some(name) = message.strip_prefix("upstream not found: ") {
+                values.insert("name".to_string(), name.to_string());
+                "dns.upstreamNotFound"
+            } else if let Some((protocol, listen)) =
                 parse_listener_error(message, " listen address ", " is already in use")
             {
                 values.insert("protocol".to_string(), protocol);
@@ -118,6 +123,20 @@ pub async fn lookup_domain(
         .lookup_domain(domain, record_type)
         .await
         .map_err(to_command_error)
+}
+
+#[tauri::command]
+pub async fn check_upstream_health(
+    app: AppHandle,
+    service: State<'_, DesktopService>,
+    upstream_name: String,
+) -> Result<UpstreamHealthCheckResult, CommandError> {
+    let result = service
+        .check_upstream_health(upstream_name)
+        .await
+        .map_err(to_command_error)?;
+    crate::emit_desktop_status(&app);
+    Ok(result)
 }
 
 #[tauri::command]

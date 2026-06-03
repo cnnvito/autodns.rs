@@ -215,6 +215,12 @@ export type UpstreamHealth = {
   latencyMs?: number;
 };
 
+export type UpstreamHealthCheckResult = {
+  success: boolean;
+  upstream: UpstreamHealth;
+  status: DesktopStatus;
+};
+
 export type ProxyHealth = {
   name: string;
   endpoint: string;

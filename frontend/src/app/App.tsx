@@ -21,6 +21,7 @@ import { useTranslation } from "react-i18next";
 
 import {
   applySystemDns,
+  checkUpstreamHealth,
   clearDnsCache,
   hideWindow,
   loadManagedConfig,
@@ -160,6 +161,7 @@ export function App() {
   const [settingsSection, setSettingsSection] = useState<SettingsSection>("general");
   const [closePromptOpen, setClosePromptOpen] = useState(false);
   const [appVersion, setAppVersion] = useState("");
+  const [checkingUpstreams, setCheckingUpstreams] = useState<Set<string>>(() => new Set());
   const lastRuntimeError = useRef("");
   const lastUpstreamHealth = useRef<Map<string, HealthState> | null>(null);
   const systemNotificationPermission = useRef<boolean | null>(null);
@@ -613,6 +615,45 @@ export function App() {
     }
   }
 
+  async function handleCheckUpstreamHealth(upstreamName: string) {
+    const name = upstreamName.trim();
+    if (!name) {
+      return;
+    }
+    if (!running) {
+      notify("warning", t("notifications.upstreamCheckUnavailable"), t("status.serviceNotRunning"));
+      return;
+    }
+    setCheckingUpstreams((current) => new Set(current).add(name));
+    try {
+      const result = await checkUpstreamHealth(name);
+      setStatus(result.status);
+      const latency = result.upstream.latencyMs;
+      if (result.success) {
+        notify(
+          "success",
+          t("notifications.upstreamCheckPassed"),
+          latency !== undefined
+            ? t("notifications.upstreamCheckPassedDescription", { name, latency })
+            : t("notifications.upstreamCheckPassedDescriptionNoLatency", { name })
+        );
+      } else {
+        const error = result.upstream.lastErrorMessage
+          ? localizedMessageText(result.upstream.lastErrorMessage, (key, values) => t(key, values))
+          : result.upstream.lastError || t("common.unknown");
+        notify("warning", t("notifications.upstreamCheckFailed"), t("notifications.upstreamCheckFailedDescription", { name, error }));
+      }
+    } catch (err) {
+      notifyError(t("notifications.upstreamCheckFailed"), err);
+    } finally {
+      setCheckingUpstreams((current) => {
+        const next = new Set(current);
+        next.delete(name);
+        return next;
+      });
+    }
+  }
+
   async function handleHideToTray() {
     setClosePromptOpen(false);
     try {
@@ -646,7 +687,16 @@ export function App() {
       return <RulesPage doc={configDoc} onChange={handleConfigDocChange} validation={validation.resolver} />;
     }
     if (activeTab === "upstreams") {
-      return <UpstreamsPage doc={configDoc} onChange={handleConfigDocChange} validation={validation.resolver} />;
+      return (
+        <UpstreamsPage
+          doc={configDoc}
+          onChange={handleConfigDocChange}
+          validation={validation.resolver}
+          running={running}
+          checkingUpstreams={checkingUpstreams}
+          onCheckHealth={handleCheckUpstreamHealth}
+        />
+      );
     }
     if (activeTab === "lookup") {
       return <LookupPage running={running} />;

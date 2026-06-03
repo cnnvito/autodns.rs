@@ -121,6 +121,7 @@ pub fn run() {
             status,
             clear_dns_cache,
             lookup_domain,
+            check_upstream_health,
             list_dns_history,
             dns_history_top_domains,
             dns_history_overview,

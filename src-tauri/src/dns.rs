@@ -1153,6 +1153,20 @@ impl Resolver {
         self.cache.clear()
     }
 
+    pub(crate) async fn check_upstream_health(
+        &self,
+        upstream_name: &str,
+        domain: &str,
+        timeout: Duration,
+    ) -> Result<bool> {
+        let client = self
+            .clients
+            .get(upstream_name)
+            .cloned()
+            .ok_or_else(|| anyhow!("upstream not found: {upstream_name}"))?;
+        Ok(probe_upstream_health(client, self.health.clone(), domain, timeout).await)
+    }
+
     pub(crate) async fn lookup(&self, domain: &str, record_type: &str) -> Result<DnsLookupResult> {
         let qtype = lookup_qtype(record_type)?;
         let domain = normalize_domain(domain)?;
@@ -2564,24 +2578,38 @@ async fn run_health_loop(
         let Some(permit) = permit else {
             break;
         };
-        let qtype = if domain == "." { 2 } else { TYPE_A };
-        let req = build_query(&domain, qtype);
-        let started = Instant::now();
-        match client.exchange(&req, Some(timeout)).await {
-            Ok(resp) if !matches!(rcode(&resp), Some(RCODE_SERVER_FAILURE | RCODE_REFUSED)) => {
-                health.record_probe_success(&client.name, started.elapsed())
-            }
-            Ok(_) => {
-                health.record_probe_failure(&client.name, "healthcheck returned retryable response")
-            }
-            Err(err) if is_upstream_connecting_error(&err) => {}
-            Err(err) => health.record_probe_failure(&client.name, err.to_string()),
-        }
+        probe_upstream_health(client.clone(), health.clone(), &domain, timeout).await;
         drop(permit);
         let delay = health.probe_delay(&client.name, interval);
         tokio::select! {
             _ = stop.changed() => break,
             _ = tokio::time::sleep(delay) => {}
+        }
+    }
+}
+
+async fn probe_upstream_health(
+    client: UpstreamClient,
+    health: Arc<HealthMonitor>,
+    domain: &str,
+    timeout: Duration,
+) -> bool {
+    let qtype = if domain == "." { TYPE_NS } else { TYPE_A };
+    let req = build_query(domain, qtype);
+    let started = Instant::now();
+    match client.exchange(&req, Some(timeout)).await {
+        Ok(resp) if !matches!(rcode(&resp), Some(RCODE_SERVER_FAILURE | RCODE_REFUSED)) => {
+            health.record_probe_success(&client.name, started.elapsed());
+            true
+        }
+        Ok(_) => {
+            health.record_probe_failure(&client.name, "healthcheck returned retryable response");
+            false
+        }
+        Err(err) if is_upstream_connecting_error(&err) => false,
+        Err(err) => {
+            health.record_probe_failure(&client.name, err.to_string());
+            false
         }
     }
 }

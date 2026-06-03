@@ -1,5 +1,5 @@
-import { Button, Card, Empty, Input, Select, Space, Switch, Table, Tag, Typography } from "antd";
-import { ArrowDownOutlined, ArrowUpOutlined, DeleteOutlined, PlusOutlined } from "@ant-design/icons";
+import { Button, Card, Empty, Input, Select, Space, Switch, Table, Tag, Tooltip, Typography } from "antd";
+import { ArrowDownOutlined, ArrowUpOutlined, DeleteOutlined, PlusOutlined, ReloadOutlined } from "@ant-design/icons";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 
@@ -14,9 +14,12 @@ type ProxyAddressPatch = Pick<ProxyConfig, "host" | "port">;
 
 type UpstreamsPageProps = ConfigPageProps & {
   validation: ConfigValidation["resolver"];
+  running: boolean;
+  checkingUpstreams: Set<string>;
+  onCheckHealth: (upstreamName: string) => void;
 };
 
-export function UpstreamsPage({ doc, onChange, validation }: UpstreamsPageProps) {
+export function UpstreamsPage({ doc, onChange, validation, running, checkingUpstreams, onCheckHealth }: UpstreamsPageProps) {
   const { t } = useTranslation();
   const [endpointDrafts, setEndpointDrafts] = useState<Record<number, string>>({});
   const [proxyAddressDrafts, setProxyAddressDrafts] = useState<Record<number, string>>({});
@@ -286,10 +289,21 @@ export function UpstreamsPage({ doc, onChange, validation }: UpstreamsPageProps)
               },
               {
                 title: "",
-                width: 52,
+                width: 88,
                 align: "right",
                 render: (_value, record) => (
-                  <Button icon={<DeleteOutlined />} onClick={() => removeUpstream(record.index)} disabled={cfg.resolver.upstreams.length <= 1} aria-label={t("upstreams.deleteUpstream")} />
+                  <Space.Compact>
+                    <Tooltip title={t("upstreams.checkHealth")}>
+                      <Button
+                        icon={<ReloadOutlined />}
+                        loading={checkingUpstreams.has(record.item.name)}
+                        onClick={() => onCheckHealth(record.item.name)}
+                        disabled={!running || !record.item.name.trim()}
+                        aria-label={t("upstreams.checkHealthFor", { name: record.item.name || t("upstreams.numberedUpstream", { index: record.index + 1 }) })}
+                      />
+                    </Tooltip>
+                    <Button icon={<DeleteOutlined />} onClick={() => removeUpstream(record.index)} disabled={cfg.resolver.upstreams.length <= 1} aria-label={t("upstreams.deleteUpstream")} />
+                  </Space.Compact>
                 )
               }
             ]}
