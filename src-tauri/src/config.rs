@@ -419,6 +419,9 @@ impl CoreConfig {
         if self.server.mode == "doh" && self.server.path.is_empty() {
             self.server.path = "/dns-query".into();
         }
+        if self.resolver.timeout.is_empty() {
+            self.resolver.timeout = "5s".into();
+        }
         self.apply_cache_defaults();
         if self.healthcheck.enabled {
             if self.healthcheck.interval.is_empty() {
@@ -943,6 +946,16 @@ mod tests {
             path.file_name().and_then(|name| name.to_str()),
             Some("autodns.sqlite3")
         );
+    }
+
+    #[test]
+    fn apply_defaults_sets_resolver_timeout() {
+        let mut cfg = default_local_config();
+        cfg.resolver.timeout.clear();
+
+        cfg.apply_defaults();
+
+        assert_eq!(cfg.resolver.timeout, "5s");
     }
 
     #[test]

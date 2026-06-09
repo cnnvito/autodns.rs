@@ -63,6 +63,7 @@ const MAX_CONCURRENT_HEALTHCHECKS: usize = 4;
 const HEALTHCHECK_STAGGER_STEP: Duration = Duration::from_millis(200);
 const HEALTHCHECK_MAX_BACKOFF: Duration = Duration::from_secs(300);
 const BOOTSTRAP_LOOKUP_TIMEOUT: Duration = Duration::from_secs(2);
+const DEFAULT_RESOLVER_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Clone)]
 pub struct RuntimeView {
@@ -663,11 +664,11 @@ fn build_resolver(
         history,
         clients,
         health,
-        timeout: if cfg.resolver.timeout.is_empty() {
-            None
+        timeout: Some(if cfg.resolver.timeout.is_empty() {
+            DEFAULT_RESOLVER_TIMEOUT
         } else {
-            Some(parse_go_duration(&cfg.resolver.timeout)?)
-        },
+            parse_go_duration(&cfg.resolver.timeout)?
+        }),
         ipv6_enabled: cfg.resolver.ipv6_enabled,
         logs,
     })
@@ -1300,11 +1301,6 @@ impl Resolver {
         // still have an answer for split-horizon, geo, or policy-routed domains. Keep the
         // latest negative as a fallback and only return it after every selected upstream
         // has failed to produce an answer.
-        let healthy_selected = selected.iter().any(|name| {
-            self.clients
-                .get(name)
-                .is_some_and(|client| !client.should_skip_for_query())
-        });
         let mut last_negative = None;
         let mut attempt_count = 0usize;
         let mut last_error = None;
@@ -1318,7 +1314,7 @@ impl Resolver {
                 }
                 continue;
             };
-            if healthy_selected && client.should_skip_for_query() {
+            if client.should_skip_for_query() {
                 if debug_logs {
                     self.logs.push(
                         "debug",
@@ -1575,6 +1571,11 @@ impl UpstreamClient {
 
     fn mark_transport_failure(&self) {
         *self.endpoint_addrs.lock() = None;
+        *self.udp.lock() = None;
+        *self.socks5_udp.lock() = None;
+        *self.tcp.lock() = None;
+        *self.dot.lock() = None;
+        *self.doq.lock() = None;
         let failures = self.transport_failure_streak.fetch_add(1, Ordering::AcqRel) + 1;
         if failures >= self.failure_threshold {
             self.store_pool_state(UpstreamPoolState::Degraded);
@@ -4113,6 +4114,55 @@ mod tests {
         client.mark_ready();
         assert_eq!(client.pool_state(), UpstreamPoolState::Ready);
         assert!(!client.should_skip_for_query());
+    }
+
+    #[tokio::test]
+    async fn upstream_pool_transport_failure_drops_cached_stream_client() {
+        let client = test_upstream_client();
+        let (stream, _peer) = tokio::io::duplex(64);
+        *client.tcp.lock() = Some(LenPrefixedUpstreamClient::new(Box::new(stream)));
+
+        assert!(client.tcp.lock().is_some());
+
+        client.mark_transport_failure();
+
+        assert!(client.tcp.lock().is_none());
+    }
+
+    #[test]
+    fn build_resolver_defaults_empty_timeout() {
+        let mut cfg = crate::config::default_local_config();
+        cfg.resolver.timeout.clear();
+
+        let resolver = build_resolver(&cfg, LogBuffer::new(1), DnsHistoryRecorder::disabled())
+            .expect("resolver");
+
+        assert_eq!(resolver.timeout, Some(DEFAULT_RESOLVER_TIMEOUT));
+    }
+
+    #[tokio::test]
+    async fn resolver_does_not_query_degraded_upstream() {
+        let mut cfg = crate::config::default_local_config();
+        cfg.resolver.timeout = "200ms".into();
+        cfg.resolver.upstreams = vec![CoreUpstreamConfig {
+            name: "degraded".into(),
+            endpoint: "udp://192.0.2.53:53".into(),
+            ..Default::default()
+        }];
+        let resolver = build_resolver(&cfg, LogBuffer::new(1), DnsHistoryRecorder::disabled())
+            .expect("resolver");
+        let client = resolver.clients.get("degraded").expect("upstream");
+        client.store_pool_state(UpstreamPoolState::Degraded);
+
+        let started = Instant::now();
+        let resp = resolver
+            .resolve(build_query("degraded.example", TYPE_A))
+            .await
+            .expect("servfail response");
+
+        assert_eq!(rcode(&resp), Some(RCODE_SERVER_FAILURE));
+        assert_eq!(client.transport_failure_streak.load(Ordering::Acquire), 0);
+        assert!(started.elapsed() < Duration::from_millis(100));
     }
 
     #[test]
