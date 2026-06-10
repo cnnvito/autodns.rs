@@ -25,6 +25,7 @@ pub(crate) trait DnsHistoryBackend: Send + Sync {
         domain: &str,
         status_filter: &str,
         window: &str,
+        upstream_name: &str,
         limit: usize,
         offset: usize,
     ) -> Result<DnsHistoryList>;
@@ -35,7 +36,10 @@ pub(crate) trait DnsHistoryBackend: Send + Sync {
         domain: &str,
         status_filter: &str,
         window: &str,
+        upstream_name: &str,
     ) -> Result<Vec<DnsHistoryTopDomain>>;
+
+    fn upstream_names(&self, limit: usize) -> Result<Vec<String>>;
 
     fn overview(&self) -> Result<DnsHistoryOverview>;
 
@@ -64,11 +68,12 @@ impl DnsHistoryBackend for SqliteDnsHistoryBackend {
         domain: &str,
         status_filter: &str,
         window: &str,
+        upstream_name: &str,
         limit: usize,
         offset: usize,
     ) -> Result<DnsHistoryList> {
         self.store
-            .list_dns_history(domain, status_filter, window, limit, offset)
+            .list_dns_history(domain, status_filter, window, upstream_name, limit, offset)
     }
 
     fn top_domains(
@@ -77,9 +82,14 @@ impl DnsHistoryBackend for SqliteDnsHistoryBackend {
         domain: &str,
         status_filter: &str,
         window: &str,
+        upstream_name: &str,
     ) -> Result<Vec<DnsHistoryTopDomain>> {
         self.store
-            .dns_history_top_domains(limit, domain, status_filter, window)
+            .dns_history_top_domains(limit, domain, status_filter, window, upstream_name)
+    }
+
+    fn upstream_names(&self, limit: usize) -> Result<Vec<String>> {
+        self.store.dns_history_upstream_names(limit)
     }
 
     fn overview(&self) -> Result<DnsHistoryOverview> {

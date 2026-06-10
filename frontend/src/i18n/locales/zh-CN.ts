@@ -314,6 +314,7 @@ export const zhCN = {
     refresh: "刷新",
     status: "状态",
     time: "时间",
+    upstreamFilter: "上游名称",
     all: "全部",
     errors: "异常",
     oneHour: "1 小时",

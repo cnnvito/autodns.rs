@@ -948,6 +948,11 @@ h2 {
   min-width: 0;
 }
 
+.workbenchHistoryUpstreamInput {
+  flex: 0 1 14rem;
+  min-width: 10rem;
+}
+
 .workbenchInlineSelect,
 .workbenchInlineNumber {
   width: 100%;
@@ -983,6 +988,29 @@ h2 {
   padding-block: 1px;
 }
 
+.upstreamOrderCell {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.upstreamOrderTag {
+  flex: 0 0 auto;
+  min-width: 32px;
+  margin-inline-end: 0;
+  text-align: center;
+}
+
+.tableActionButtons {
+  justify-content: flex-end;
+}
+
+.fieldErrorTooltip {
+  display: block;
+  min-width: 0;
+}
+
 .upstreamEndpointInput,
 .proxyAddressInput {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
@@ -1004,7 +1032,8 @@ h2 {
 }
 
 .workbenchFluidInput .ant-input,
-.workbenchCompactSelect .ant-select {
+.workbenchCompactSelect .ant-select,
+.workbenchHistoryUpstreamInput.ant-select {
   width: 100%;
 }
 

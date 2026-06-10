@@ -112,9 +112,10 @@ export async function listDnsHistory(
   limit = 100,
   offset = 0,
   statusFilter: DnsHistoryStatusFilter = "all",
-  window: DnsHistoryWindow = "all"
+  window: DnsHistoryWindow = "all",
+  upstreamName = ""
 ): Promise<DnsHistoryList> {
-  const result = await invoke<DnsHistoryList>("list_dns_history", { domain, statusFilter, window, limit, offset });
+  const result = await invoke<DnsHistoryList>("list_dns_history", { domain, statusFilter, window, upstreamName, limit, offset });
   return {
     items: Array.isArray(result.items) ? result.items.map(normalizeDnsHistoryEntry) : [],
     total: Number.isFinite(result.total) ? result.total : 0
@@ -125,9 +126,10 @@ export async function dnsHistoryTopDomains(
   limit = 20,
   domain = "",
   statusFilter: DnsHistoryStatusFilter = "all",
-  window: DnsHistoryWindow = "all"
+  window: DnsHistoryWindow = "all",
+  upstreamName = ""
 ): Promise<DnsHistoryTopDomain[]> {
-  const result = await invoke<DnsHistoryTopDomain[]>("dns_history_top_domains", { limit, domain, statusFilter, window });
+  const result = await invoke<DnsHistoryTopDomain[]>("dns_history_top_domains", { limit, domain, statusFilter, window, upstreamName });
   return Array.isArray(result)
     ? result.map((item) => ({
         domain: item.domain ?? "",
@@ -136,6 +138,11 @@ export async function dnsHistoryTopDomains(
         averageDurationMs: Number.isFinite(item.averageDurationMs) ? item.averageDurationMs : 0
       }))
     : [];
+}
+
+export async function dnsHistoryUpstreamNames(limit = 200): Promise<string[]> {
+  const result = await invoke<string[]>("dns_history_upstream_names", { limit });
+  return Array.isArray(result) ? result.filter((item) => typeof item === "string" && item.trim()) : [];
 }
 
 export async function dnsHistoryOverview(): Promise<DnsHistoryOverview> {

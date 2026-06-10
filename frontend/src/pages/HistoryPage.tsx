@@ -1,10 +1,10 @@
-import { App as AntdApp, Button, Descriptions, Empty, Input, List, Segmented, Space, Table, Tag, Typography, type TableColumnsType } from "antd";
+import { App as AntdApp, AutoComplete, Button, Descriptions, Empty, Input, List, Segmented, Space, Table, Tag, Typography, type TableColumnsType } from "antd";
 import { DeleteOutlined, ReloadOutlined, SearchOutlined } from "@ant-design/icons";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { ResolvedLanguage } from "../i18n/language";
 
-import { clearDnsHistory, dnsHistoryTopDomains, listDnsHistory } from "../shared/api";
+import { clearDnsHistory, dnsHistoryTopDomains, dnsHistoryUpstreamNames, listDnsHistory } from "../shared/api";
 import { errorMessage, formatDate, localizedMessageText } from "../shared/format";
 import type {
   DnsHistoryEntry,
@@ -21,12 +21,15 @@ export function HistoryPage({ language }: { language: ResolvedLanguage }) {
   const { modal } = AntdApp.useApp();
   const [domain, setDomain] = useState("");
   const [filter, setFilter] = useState("");
+  const [upstreamName, setUpstreamName] = useState("");
+  const [upstreamFilter, setUpstreamFilter] = useState("");
   const [statusFilter, setStatusFilter] = useState<DnsHistoryStatusFilter>("all");
   const [historyWindow, setHistoryWindow] = useState<DnsHistoryWindow>("24h");
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(defaultHistoryPageSize);
   const [items, setItems] = useState<DnsHistoryEntry[]>([]);
   const [topDomains, setTopDomains] = useState<DnsHistoryTopDomain[]>([]);
+  const [upstreamOptions, setUpstreamOptions] = useState<string[]>([]);
   const [total, setTotal] = useState(0);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -39,23 +42,33 @@ export function HistoryPage({ language }: { language: ResolvedLanguage }) {
     return () => window.clearTimeout(timer);
   }, [domain]);
 
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      setUpstreamFilter(upstreamName.trim());
+      setPage(1);
+    }, 300);
+    return () => window.clearTimeout(timer);
+  }, [upstreamName]);
+
   const refresh = useCallback(async () => {
     setBusy(true);
     setError("");
     try {
-      const [history, nextTopDomains] = await Promise.all([
-        listDnsHistory(filter, pageSize, (page - 1) * pageSize, statusFilter, historyWindow),
-        dnsHistoryTopDomains(20, filter, statusFilter, historyWindow)
+      const [history, nextTopDomains, nextUpstreamOptions] = await Promise.all([
+        listDnsHistory(filter, pageSize, (page - 1) * pageSize, statusFilter, historyWindow, upstreamFilter),
+        dnsHistoryTopDomains(20, filter, statusFilter, historyWindow, upstreamFilter),
+        dnsHistoryUpstreamNames()
       ]);
       setItems(history.items);
       setTotal(history.total);
       setTopDomains(nextTopDomains);
+      setUpstreamOptions(nextUpstreamOptions);
     } catch (err) {
       setError(errorMessage(err, (key, values) => t(key, values)));
     } finally {
       setBusy(false);
     }
-  }, [filter, historyWindow, page, statusFilter, t]);
+  }, [filter, historyWindow, page, pageSize, statusFilter, t, upstreamFilter]);
 
   useEffect(() => {
     void refresh();
@@ -90,6 +103,7 @@ export function HistoryPage({ language }: { language: ResolvedLanguage }) {
           await clearDnsHistory();
           setItems([]);
           setTopDomains([]);
+          setUpstreamOptions([]);
           setTotal(0);
           setPage(1);
         } catch (err) {
@@ -132,6 +146,12 @@ export function HistoryPage({ language }: { language: ResolvedLanguage }) {
     { title: t("history.columns.duration"), dataIndex: "durationMs", width: 86, render: (value: number) => `${value} ms` },
     { title: t("history.columns.status"), width: 104, render: (_, item) => <HistoryStatus item={item} /> }
   ];
+  const visibleUpstreamOptions = useMemo(() => {
+    const input = upstreamName.trim().toLowerCase();
+    return upstreamOptions
+      .filter((name) => !input || name.toLowerCase().includes(input))
+      .map((name) => ({ value: name, label: name }));
+  }, [upstreamName, upstreamOptions]);
   const pageStart = total === 0 ? 0 : (page - 1) * pageSize + 1;
   const pageEnd = Math.min(page * pageSize, total);
 
@@ -146,6 +166,15 @@ export function HistoryPage({ language }: { language: ResolvedLanguage }) {
               value={domain}
               onChange={(event) => setDomain(event.target.value)}
               placeholder="example.com"
+            />
+            <AutoComplete
+              className="workbenchHistoryUpstreamInput"
+              allowClear
+              value={upstreamName}
+              onChange={(value) => setUpstreamName(value)}
+              onSelect={(value) => setUpstreamName(value)}
+              options={visibleUpstreamOptions}
+              placeholder={t("history.upstreamFilter")}
             />
             <FilterControl label={t("history.status")} options={statusOptions} value={statusFilter} onChange={updateStatusFilter} />
             <FilterControl label={t("history.time")} options={windowOptions} value={historyWindow} onChange={updateWindow} />

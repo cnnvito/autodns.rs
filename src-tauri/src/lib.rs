@@ -124,6 +124,7 @@ pub fn run() {
             check_upstream_health,
             list_dns_history,
             dns_history_top_domains,
+            dns_history_upstream_names,
             dns_history_overview,
             clear_dns_history,
             managed_config,

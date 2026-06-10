@@ -248,11 +248,18 @@ impl DesktopService {
         domain: String,
         status_filter: String,
         window: String,
+        upstream_name: String,
         limit: usize,
         offset: usize,
     ) -> Result<DnsHistoryList> {
-        self.history_backend()?
-            .list(&domain, &status_filter, &window, limit, offset)
+        self.history_backend()?.list(
+            &domain,
+            &status_filter,
+            &window,
+            &upstream_name,
+            limit,
+            offset,
+        )
     }
 
     pub fn dns_history_top_domains(
@@ -261,9 +268,14 @@ impl DesktopService {
         domain: String,
         status_filter: String,
         window: String,
+        upstream_name: String,
     ) -> Result<Vec<DnsHistoryTopDomain>> {
         self.history_backend()?
-            .top_domains(limit, &domain, &status_filter, &window)
+            .top_domains(limit, &domain, &status_filter, &window, &upstream_name)
+    }
+
+    pub fn dns_history_upstream_names(&self, limit: usize) -> Result<Vec<String>> {
+        self.history_backend()?.upstream_names(limit)
     }
 
     pub fn dns_history_overview(&self) -> Result<DnsHistoryOverview> {

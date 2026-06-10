@@ -130,11 +130,20 @@ impl ConfigStore {
         domain: &str,
         status_filter: &str,
         window: &str,
+        upstream_name: &str,
         limit: usize,
         offset: usize,
     ) -> Result<DnsHistoryList> {
         let mut conn = self.open_read_connection()?;
-        list_dns_history(&mut conn, domain, status_filter, window, limit, offset)
+        list_dns_history(
+            &mut conn,
+            domain,
+            status_filter,
+            window,
+            upstream_name,
+            limit,
+            offset,
+        )
     }
 
     pub fn dns_history_top_domains(
@@ -143,9 +152,22 @@ impl ConfigStore {
         domain: &str,
         status_filter: &str,
         window: &str,
+        upstream_name: &str,
     ) -> Result<Vec<DnsHistoryTopDomain>> {
         let mut conn = self.open_read_connection()?;
-        dns_history_top_domains(&mut conn, limit, domain, status_filter, window)
+        dns_history_top_domains(
+            &mut conn,
+            limit,
+            domain,
+            status_filter,
+            window,
+            upstream_name,
+        )
+    }
+
+    pub fn dns_history_upstream_names(&self, limit: usize) -> Result<Vec<String>> {
+        let mut conn = self.open_read_connection()?;
+        dns_history_upstream_names(&mut conn, limit)
     }
 
     pub fn dns_history_overview(&self) -> Result<DnsHistoryOverview> {
@@ -1193,11 +1215,13 @@ fn list_dns_history(
     domain: &str,
     status_filter: &str,
     window: &str,
+    upstream_name: &str,
     limit: usize,
     offset: usize,
 ) -> Result<DnsHistoryList> {
     let limit = limit.clamp(1, 500);
     let domain = domain.trim();
+    let upstream_name = upstream_name.trim();
     let cutoff = history_window_cutoff(window);
     let error_only = history_error_only(status_filter);
     let total = conn.query_row(
@@ -1207,8 +1231,9 @@ fn list_dns_history(
         WHERE (?1 = '' OR lower(domain) LIKE '%' || lower(?1) || '%')
             AND (?2 = '' OR started_at >= ?2)
             AND (?3 = 0 OR source = 'error' OR response_code <> 'NOERROR' OR error <> '')
+            AND (?4 = '' OR upstream_name = ?4)
         "#,
-        params![domain, &cutoff, error_only],
+        params![domain, &cutoff, error_only, upstream_name],
         |row| row.get::<_, i64>(0),
     )?;
 
@@ -1222,8 +1247,9 @@ fn list_dns_history(
         WHERE (?1 = '' OR lower(domain) LIKE '%' || lower(?1) || '%')
             AND (?2 = '' OR started_at >= ?2)
             AND (?3 = 0 OR source = 'error' OR response_code <> 'NOERROR' OR error <> '')
+            AND (?4 = '' OR upstream_name = ?4)
         ORDER BY started_at DESC, id DESC
-        LIMIT ?4 OFFSET ?5
+        LIMIT ?5 OFFSET ?6
         "#,
     )?;
     let rows = stmt.query_map(
@@ -1231,6 +1257,7 @@ fn list_dns_history(
             domain,
             &cutoff,
             error_only,
+            upstream_name,
             usize_to_i64(limit)?,
             usize_to_i64(offset)?
         ],
@@ -1267,8 +1294,10 @@ fn dns_history_top_domains(
     domain: &str,
     status_filter: &str,
     window: &str,
+    upstream_name: &str,
 ) -> Result<Vec<DnsHistoryTopDomain>> {
     let domain = domain.trim();
+    let upstream_name = upstream_name.trim();
     let cutoff = history_window_cutoff(window);
     let error_only = history_error_only(status_filter);
     let mut stmt = conn.prepare(
@@ -1282,9 +1311,10 @@ fn dns_history_top_domains(
         WHERE (?1 = '' OR lower(domain) LIKE '%' || lower(?1) || '%')
             AND (?2 = '' OR started_at >= ?2)
             AND (?3 = 0 OR source = 'error' OR response_code <> 'NOERROR' OR error <> '')
+            AND (?4 = '' OR upstream_name = ?4)
         GROUP BY domain
         ORDER BY COUNT(*) DESC, MAX(started_at) DESC
-        LIMIT ?4
+        LIMIT ?5
         "#,
     )?;
     let rows = stmt.query_map(
@@ -1292,6 +1322,7 @@ fn dns_history_top_domains(
             domain,
             &cutoff,
             error_only,
+            upstream_name,
             usize_to_i64(limit.clamp(1, 100))?
         ],
         |row| {
@@ -1303,6 +1334,22 @@ fn dns_history_top_domains(
             })
         },
     )?;
+    collect_rows(rows)
+}
+
+fn dns_history_upstream_names(conn: &mut Connection, limit: usize) -> Result<Vec<String>> {
+    let mut stmt = conn.prepare(
+        r#"
+        SELECT DISTINCT upstream_name
+        FROM dns_query_history
+        WHERE upstream_name <> ''
+        ORDER BY upstream_name COLLATE NOCASE ASC
+        LIMIT ?1
+        "#,
+    )?;
+    let rows = stmt.query_map(params![usize_to_i64(limit.clamp(1, 500))?], |row| {
+        row.get(0)
+    })?;
     collect_rows(rows)
 }
 
@@ -1562,7 +1609,7 @@ mod tests {
             .expect("insert history");
 
         let history = store
-            .list_dns_history("ttl.example", "all", "all", 10, 0)
+            .list_dns_history("ttl.example", "all", "all", "", 10, 0)
             .expect("load history");
 
         assert_eq!(history.items.len(), 1);
@@ -1629,16 +1676,80 @@ mod tests {
             .expect("insert history");
 
         let history = store
-            .list_dns_history("", "errors", "1h", 10, 0)
+            .list_dns_history("", "errors", "1h", "", 10, 0)
             .expect("load filtered history");
         let top_domains = store
-            .dns_history_top_domains(10, "", "errors", "1h")
+            .dns_history_top_domains(10, "", "errors", "1h", "")
             .expect("load filtered top domains");
 
         assert_eq!(history.total, 1);
         assert_eq!(history.items[0].domain, "bad.example");
         assert_eq!(top_domains.len(), 1);
         assert_eq!(top_domains[0].domain, "bad.example");
+
+        drop(store);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn dns_history_filters_by_upstream_name() {
+        let path = temp_store_path("history-upstream-filter");
+        let store = ConfigStore::open(path.clone()).expect("open config store");
+        let now = Utc::now();
+
+        store
+            .insert_dns_history(&[
+                DnsHistoryEvent {
+                    started_at: now.to_rfc3339(),
+                    domain: "company.example".into(),
+                    record_type: "A".into(),
+                    qclass: 1,
+                    source: "upstream".into(),
+                    route_id: 0,
+                    upstream_name: "corp-dns".into(),
+                    upstream_protocol: "udp".into(),
+                    duration_ms: 12,
+                    attempt_count: 1,
+                    response_code: "NOERROR".into(),
+                    min_ttl: Some(42),
+                    error: String::new(),
+                },
+                DnsHistoryEvent {
+                    started_at: now.to_rfc3339(),
+                    domain: "public.example".into(),
+                    record_type: "A".into(),
+                    qclass: 1,
+                    source: "upstream".into(),
+                    route_id: 0,
+                    upstream_name: "public-dns".into(),
+                    upstream_protocol: "udp".into(),
+                    duration_ms: 18,
+                    attempt_count: 1,
+                    response_code: "NOERROR".into(),
+                    min_ttl: Some(60),
+                    error: String::new(),
+                },
+            ])
+            .expect("insert history");
+
+        let history = store
+            .list_dns_history("", "all", "all", "corp-dns", 10, 0)
+            .expect("load filtered history");
+        let top_domains = store
+            .dns_history_top_domains(10, "", "all", "all", "corp-dns")
+            .expect("load filtered top domains");
+        let upstream_names = store
+            .dns_history_upstream_names(10)
+            .expect("load upstream names");
+
+        assert_eq!(history.total, 1);
+        assert_eq!(history.items[0].domain, "company.example");
+        assert_eq!(top_domains.len(), 1);
+        assert_eq!(top_domains[0].domain, "company.example");
+        assert_eq!(
+            upstream_names,
+            vec!["corp-dns".to_string(), "public-dns".to_string()]
+        );
 
         drop(store);
         let _ = std::fs::remove_file(path);

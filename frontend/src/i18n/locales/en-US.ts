@@ -315,6 +315,7 @@ export const enUS = {
     refresh: "Refresh",
     status: "Status",
     time: "Time",
+    upstreamFilter: "Upstream name",
     all: "All",
     errors: "Errors",
     oneHour: "1 hour",

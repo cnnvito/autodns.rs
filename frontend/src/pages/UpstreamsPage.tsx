@@ -1,4 +1,4 @@
-import { Button, Card, Empty, Input, Select, Space, Switch, Table, Tag, Tooltip, Typography } from "antd";
+import { Button, Card, Empty, Input, Select, Space, Switch, Table, Tag, Tooltip, Typography, type TableColumnsType } from "antd";
 import { ArrowDownOutlined, ArrowUpOutlined, DeleteOutlined, PlusOutlined, ReloadOutlined } from "@ant-design/icons";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -146,6 +146,182 @@ export function UpstreamsPage({ doc, onChange, validation, running, checkingUpst
   const proxyOptions = [{ value: "", label: t("upstreams.direct") }, ...cfg.resolver.proxies.map((proxy) => ({ value: proxy.name, label: proxy.name }))];
   const upstreamRows = cfg.resolver.upstreams.map((item, index) => ({ key: `upstream-${index}`, index, item }));
   const proxyRows = cfg.resolver.proxies.map((item, index) => ({ key: `proxy-${index}`, item, index }));
+  const upstreamColumns: TableColumnsType<(typeof upstreamRows)[number]> = [
+    {
+      title: t("upstreams.order"),
+      width: 112,
+      fixed: "left",
+      render: (_value, record) => (
+        <div className="upstreamOrderCell">
+          <Tag className="upstreamOrderTag">#{record.index + 1}</Tag>
+          <Space size={4}>
+            <Button
+              size="small"
+              icon={<ArrowUpOutlined />}
+              onClick={() => moveUpstream(record.index, -1)}
+              disabled={record.index === 0}
+              aria-label={t("upstreams.moveUp", { name: record.item.name || t("upstreams.numberedUpstream", { index: record.index + 1 }) })}
+            />
+            <Button
+              size="small"
+              icon={<ArrowDownOutlined />}
+              onClick={() => moveUpstream(record.index, 1)}
+              disabled={record.index === cfg.resolver.upstreams.length - 1}
+              aria-label={t("upstreams.moveDown", { name: record.item.name || t("upstreams.numberedUpstream", { index: record.index + 1 }) })}
+            />
+          </Space>
+        </div>
+      )
+    },
+    {
+      title: t("upstreams.upstreamName"),
+      width: 160,
+      render: (_value, record) => (
+        <FieldWithError error={validation.upstreams[record.index]?.name}>
+          <Input status={validation.upstreams[record.index]?.name ? "error" : undefined} value={record.item.name} onChange={(event) => updateUpstream(record.index, { name: event.target.value })} placeholder="cloudflare" />
+        </FieldWithError>
+      )
+    },
+    {
+      title: t("upstreams.endpoint"),
+      width: 310,
+      render: (_value, record) => {
+        const draft = endpointDrafts[record.index];
+        const endpointValue = draft ?? formatUpstreamEndpoint(record.item);
+        const endpointError = draft !== undefined && !parseUpstreamEndpoint(draft)
+          ? t("upstreams.endpointInvalid")
+          : validation.upstreams[record.index]?.endpoint;
+        return (
+          <FieldWithError error={endpointError}>
+            <Input
+              className="upstreamEndpointInput"
+              value={endpointValue}
+              status={endpointError ? "error" : undefined}
+              onChange={(event) => updateEndpointInput(record.index, event.target.value)}
+              onBlur={() => commitEndpointInput(record.index)}
+              onPressEnter={(event) => event.currentTarget.blur()}
+              placeholder="udp://1.1.1.1:53"
+            />
+          </FieldWithError>
+        );
+      }
+    },
+    {
+      title: "SNI",
+      width: 160,
+      render: (_value, record) => {
+        const isDoh = record.item.protocol === "http" || record.item.protocol === "https";
+        const serverNameEnabled = record.item.protocol === "dot" || isDoh;
+        return (
+          <Input
+            value={serverNameEnabled ? record.item.serverName : ""}
+            onChange={(event) => updateUpstream(record.index, { serverName: event.target.value })}
+            placeholder={serverNameEnabled ? "cloudflare-dns.com" : "-"}
+            disabled={!serverNameEnabled}
+          />
+        );
+      }
+    },
+    {
+      title: t("upstreams.proxy"),
+      width: 140,
+      render: (_value, record) => (
+        <FieldWithError error={validation.upstreams[record.index]?.proxy}>
+          <Select className="workbenchInlineSelect" status={validation.upstreams[record.index]?.proxy ? "error" : undefined} value={record.item.proxy} onChange={(value) => updateUpstream(record.index, { proxy: value })} options={proxyOptions} />
+        </FieldWithError>
+      )
+    },
+    {
+      title: "",
+      width: 104,
+      fixed: "right",
+      align: "right",
+      render: (_value, record) => (
+        <Space size={6} className="tableActionButtons">
+          <Tooltip title={t("upstreams.checkHealth")}>
+            <Button
+              icon={<ReloadOutlined />}
+              loading={checkingUpstreams.has(record.item.name)}
+              onClick={() => onCheckHealth(record.item.name)}
+              disabled={!running || !record.item.name.trim()}
+              aria-label={t("upstreams.checkHealthFor", { name: record.item.name || t("upstreams.numberedUpstream", { index: record.index + 1 }) })}
+            />
+          </Tooltip>
+          <Button icon={<DeleteOutlined />} onClick={() => removeUpstream(record.index)} disabled={cfg.resolver.upstreams.length <= 1} aria-label={t("upstreams.deleteUpstream")} />
+        </Space>
+      )
+    }
+  ];
+  const proxyColumns: TableColumnsType<(typeof proxyRows)[number]> = [
+    {
+      title: t("upstreams.name"),
+      width: 150,
+      render: (_value, record) => (
+        <FieldWithError error={validation.proxies[record.index]?.name}>
+          <Input status={validation.proxies[record.index]?.name ? "error" : undefined} value={record.item.name} onChange={(event) => updateProxy(record.index, { name: event.target.value })} placeholder={t("upstreams.name")} />
+        </FieldWithError>
+      )
+    },
+    {
+      title: t("upstreams.protocol"),
+      width: 130,
+      render: (_value, record) => (
+        <Select
+          className="workbenchInlineSelect"
+          value={record.item.protocol}
+          onChange={(value) => updateProxyEndpoint(record.index, { protocol: value, port: record.item.port || (record.item.host ? defaultPortForProxy(value) : "") })}
+          options={proxyProtocolOptions}
+        />
+      )
+    },
+    {
+      title: t("upstreams.address"),
+      width: 220,
+      render: (_value, record) => {
+        const draft = proxyAddressDrafts[record.index];
+        const addressValue = draft ?? formatProxyAddress(record.item);
+        const addressError = draft !== undefined && !parseProxyAddress(draft, record.item)
+          ? t("upstreams.addressInvalid")
+          : validation.proxies[record.index]?.address;
+        return (
+          <FieldWithError error={addressError}>
+            <Input
+              className="proxyAddressInput"
+              value={addressValue}
+              status={addressError ? "error" : undefined}
+              onChange={(event) => updateProxyAddressInput(record.index, event.target.value)}
+              onBlur={() => commitProxyAddressInput(record.index)}
+              onPressEnter={(event) => event.currentTarget.blur()}
+              placeholder="127.0.0.1:1080"
+            />
+          </FieldWithError>
+        );
+      }
+    },
+    {
+      title: t("upstreams.username"),
+      width: 140,
+      render: (_value, record) => (
+        <Input value={record.item.username} onChange={(event) => updateProxy(record.index, { username: event.target.value })} placeholder={t("upstreams.optional")} />
+      )
+    },
+    {
+      title: t("upstreams.password"),
+      width: 140,
+      render: (_value, record) => (
+        <Input.Password value={record.item.password} onChange={(event) => updateProxy(record.index, { password: event.target.value })} placeholder={t("upstreams.optional")} />
+      )
+    },
+    {
+      title: "",
+      width: 64,
+      fixed: "right",
+      align: "right",
+      render: (_value, record) => (
+        <Button icon={<DeleteOutlined />} onClick={() => removeProxy(record.index)} aria-label={t("upstreams.deleteProxy")} />
+      )
+    }
+  ];
 
   return (
     <section className="pageWorkbench">
@@ -203,110 +379,9 @@ export function UpstreamsPage({ doc, onChange, validation, running, checkingUpst
             rowKey="key"
             size="small"
             pagination={false}
-            scroll={{ x: "max-content" }}
+            scroll={{ x: 986 }}
             dataSource={upstreamRows}
-            columns={[
-              {
-                title: t("upstreams.move"),
-                width: 76,
-                render: (_value, record) => (
-                  <Space.Compact>
-                    <Button
-                      size="small"
-                      icon={<ArrowUpOutlined />}
-                      onClick={() => moveUpstream(record.index, -1)}
-                      disabled={record.index === 0}
-                      aria-label={t("upstreams.moveUp", { name: record.item.name || t("upstreams.numberedUpstream", { index: record.index + 1 }) })}
-                    />
-                    <Button
-                      size="small"
-                      icon={<ArrowDownOutlined />}
-                      onClick={() => moveUpstream(record.index, 1)}
-                      disabled={record.index === cfg.resolver.upstreams.length - 1}
-                      aria-label={t("upstreams.moveDown", { name: record.item.name || t("upstreams.numberedUpstream", { index: record.index + 1 }) })}
-                    />
-                  </Space.Compact>
-                )
-              },
-              { title: t("upstreams.order"), width: 64, render: (_value, record) => record.index + 1 },
-              {
-                title: t("upstreams.upstreamName"),
-                width: 160,
-                render: (_value, record) => (
-                  <FieldWithError error={validation.upstreams[record.index]?.name}>
-                    <Input status={validation.upstreams[record.index]?.name ? "error" : undefined} value={record.item.name} onChange={(event) => updateUpstream(record.index, { name: event.target.value })} placeholder="cloudflare" />
-                  </FieldWithError>
-                )
-              },
-              {
-                title: t("upstreams.endpoint"),
-                width: 330,
-                render: (_value, record) => {
-                  const draft = endpointDrafts[record.index];
-                  const endpointValue = draft ?? formatUpstreamEndpoint(record.item);
-                  const endpointError = draft !== undefined && !parseUpstreamEndpoint(draft)
-                    ? t("upstreams.endpointInvalid")
-                    : validation.upstreams[record.index]?.endpoint;
-                  return (
-                    <FieldWithError error={endpointError}>
-                      <Input
-                        className="upstreamEndpointInput"
-                        value={endpointValue}
-                        status={endpointError ? "error" : undefined}
-                        onChange={(event) => updateEndpointInput(record.index, event.target.value)}
-                        onBlur={() => commitEndpointInput(record.index)}
-                        onPressEnter={(event) => event.currentTarget.blur()}
-                        placeholder="udp://1.1.1.1:53"
-                      />
-                    </FieldWithError>
-                  );
-                }
-              },
-              {
-                title: "SNI",
-                width: 180,
-                render: (_value, record) => {
-                  const isDoh = record.item.protocol === "http" || record.item.protocol === "https";
-                  const serverNameEnabled = record.item.protocol === "dot" || isDoh;
-                  return (
-                    <Input
-                      value={serverNameEnabled ? record.item.serverName : ""}
-                      onChange={(event) => updateUpstream(record.index, { serverName: event.target.value })}
-                      placeholder={serverNameEnabled ? "cloudflare-dns.com" : "-"}
-                      disabled={!serverNameEnabled}
-                    />
-                  );
-                }
-              },
-              {
-                title: t("upstreams.proxy"),
-                width: 140,
-                render: (_value, record) => (
-                  <FieldWithError error={validation.upstreams[record.index]?.proxy}>
-                    <Select className="workbenchInlineSelect" status={validation.upstreams[record.index]?.proxy ? "error" : undefined} value={record.item.proxy} onChange={(value) => updateUpstream(record.index, { proxy: value })} options={proxyOptions} />
-                  </FieldWithError>
-                )
-              },
-              {
-                title: "",
-                width: 88,
-                align: "right",
-                render: (_value, record) => (
-                  <Space.Compact>
-                    <Tooltip title={t("upstreams.checkHealth")}>
-                      <Button
-                        icon={<ReloadOutlined />}
-                        loading={checkingUpstreams.has(record.item.name)}
-                        onClick={() => onCheckHealth(record.item.name)}
-                        disabled={!running || !record.item.name.trim()}
-                        aria-label={t("upstreams.checkHealthFor", { name: record.item.name || t("upstreams.numberedUpstream", { index: record.index + 1 }) })}
-                      />
-                    </Tooltip>
-                    <Button icon={<DeleteOutlined />} onClick={() => removeUpstream(record.index)} disabled={cfg.resolver.upstreams.length <= 1} aria-label={t("upstreams.deleteUpstream")} />
-                  </Space.Compact>
-                )
-              }
-            ]}
+            columns={upstreamColumns}
           />
           </div>
         </div>
@@ -324,78 +399,10 @@ export function UpstreamsPage({ doc, onChange, validation, running, checkingUpst
             rowKey="key"
             size="small"
             pagination={false}
-            scroll={{ x: "max-content" }}
+            scroll={{ x: 844 }}
             dataSource={proxyRows}
             locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t("upstreams.noProxy")} /> }}
-            columns={[
-              {
-                title: t("upstreams.name"),
-                width: 150,
-                render: (_value, record) => (
-                  <FieldWithError error={validation.proxies[record.index]?.name}>
-                    <Input status={validation.proxies[record.index]?.name ? "error" : undefined} value={record.item.name} onChange={(event) => updateProxy(record.index, { name: event.target.value })} placeholder={t("upstreams.name")} />
-                  </FieldWithError>
-                )
-              },
-              {
-                title: t("upstreams.protocol"),
-                width: 130,
-                render: (_value, record) => (
-                  <Select
-                    className="workbenchInlineSelect"
-                    value={record.item.protocol}
-                    onChange={(value) => updateProxyEndpoint(record.index, { protocol: value, port: record.item.port || (record.item.host ? defaultPortForProxy(value) : "") })}
-                    options={proxyProtocolOptions}
-                  />
-                )
-              },
-              {
-                title: t("upstreams.address"),
-                width: 220,
-                render: (_value, record) => {
-                  const draft = proxyAddressDrafts[record.index];
-                  const addressValue = draft ?? formatProxyAddress(record.item);
-                  const addressError = draft !== undefined && !parseProxyAddress(draft, record.item)
-                    ? t("upstreams.addressInvalid")
-                    : validation.proxies[record.index]?.address;
-                  return (
-                    <FieldWithError error={addressError}>
-                      <Input
-                        className="proxyAddressInput"
-                        value={addressValue}
-                        status={addressError ? "error" : undefined}
-                        onChange={(event) => updateProxyAddressInput(record.index, event.target.value)}
-                        onBlur={() => commitProxyAddressInput(record.index)}
-                        onPressEnter={(event) => event.currentTarget.blur()}
-                        placeholder="127.0.0.1:1080"
-                      />
-                    </FieldWithError>
-                  );
-                }
-              },
-              {
-                title: t("upstreams.username"),
-                width: 140,
-                render: (_value, record) => (
-                  <Input value={record.item.username} onChange={(event) => updateProxy(record.index, { username: event.target.value })} placeholder={t("upstreams.optional")} />
-                )
-              },
-              {
-                title: t("upstreams.password"),
-                width: 140,
-                render: (_value, record) => (
-                  <Input.Password value={record.item.password} onChange={(event) => updateProxy(record.index, { password: event.target.value })} placeholder={t("upstreams.optional")} />
-                )
-              },
-              {
-                title: "",
-                width: 52,
-                align: "right",
-                render: (_value, record) => (
-                  <Button icon={<DeleteOutlined />} onClick={() => removeProxy(record.index)} aria-label={t("upstreams.deleteProxy")} />
-                )
-              }
-            ]}
+            columns={proxyColumns}
           />
           </div>
         </div>
@@ -521,10 +528,12 @@ function LoadingPanel() {
 }
 
 function FieldWithError({ error, children }: { error?: string; children: React.ReactNode }) {
+  if (!error) {
+    return <>{children}</>;
+  }
   return (
-    <Space direction="vertical" size={4} className="pageFill">
-      {children}
-      {error ? <Typography.Text type="danger">{error}</Typography.Text> : null}
-    </Space>
+    <Tooltip title={error} color="red">
+      <span className="fieldErrorTooltip">{children}</span>
+    </Tooltip>
   );
 }

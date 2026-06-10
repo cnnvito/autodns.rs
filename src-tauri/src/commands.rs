@@ -145,6 +145,7 @@ pub async fn list_dns_history(
     domain: Option<String>,
     status_filter: Option<String>,
     window: Option<String>,
+    upstream_name: Option<String>,
     limit: Option<usize>,
     offset: Option<usize>,
 ) -> Result<DnsHistoryList, CommandError> {
@@ -154,6 +155,7 @@ pub async fn list_dns_history(
             domain.unwrap_or_default(),
             status_filter.unwrap_or_else(|| "all".to_string()),
             window.unwrap_or_else(|| "all".to_string()),
+            upstream_name.unwrap_or_default(),
             limit.unwrap_or(100),
             offset.unwrap_or(0),
         )
@@ -170,6 +172,7 @@ pub async fn dns_history_top_domains(
     domain: Option<String>,
     status_filter: Option<String>,
     window: Option<String>,
+    upstream_name: Option<String>,
 ) -> Result<Vec<DnsHistoryTopDomain>, CommandError> {
     tauri::async_runtime::spawn_blocking(move || {
         let service = app.state::<DesktopService>();
@@ -178,7 +181,22 @@ pub async fn dns_history_top_domains(
             domain.unwrap_or_default(),
             status_filter.unwrap_or_else(|| "all".to_string()),
             window.unwrap_or_else(|| "all".to_string()),
+            upstream_name.unwrap_or_default(),
         )
+    })
+    .await
+    .map_err(|err| command_error_from_message(&err.to_string()))?
+    .map_err(to_command_error)
+}
+
+#[tauri::command]
+pub async fn dns_history_upstream_names(
+    app: AppHandle,
+    limit: Option<usize>,
+) -> Result<Vec<String>, CommandError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let service = app.state::<DesktopService>();
+        service.dns_history_upstream_names(limit.unwrap_or(200))
     })
     .await
     .map_err(|err| command_error_from_message(&err.to_string()))?
