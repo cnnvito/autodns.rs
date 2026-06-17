@@ -61,7 +61,7 @@ const DNS_WIRE_LIMIT: usize = 65535;
 const MAX_CONCURRENT_REQUESTS: usize = 256;
 const MAX_CONCURRENT_HEALTHCHECKS: usize = 4;
 const HEALTHCHECK_STAGGER_STEP: Duration = Duration::from_millis(200);
-const HEALTHCHECK_MAX_BACKOFF: Duration = Duration::from_secs(300);
+const HEALTHCHECK_RECOVERY_CONFIRM_DELAY: Duration = Duration::from_millis(200);
 const BOOTSTRAP_LOOKUP_TIMEOUT: Duration = Duration::from_secs(2);
 const DEFAULT_RESOLVER_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -1301,10 +1301,15 @@ impl Resolver {
         // still have an answer for split-horizon, geo, or policy-routed domains. Keep the
         // latest negative as a fallback and only return it after every selected upstream
         // has failed to produce an answer.
+        let eligibility = self.health.query_eligibility(selected);
+        let has_eligible_upstream = selected
+            .iter()
+            .zip(eligibility.iter())
+            .any(|(name, eligible)| *eligible && self.clients.contains_key(name));
         let mut last_negative = None;
         let mut attempt_count = 0usize;
         let mut last_error = None;
-        for name in selected.iter() {
+        for (name, eligible) in selected.iter().zip(eligibility.iter()) {
             let Some(client) = self.clients.get(name) else {
                 if debug_logs {
                     self.logs.push(
@@ -1314,13 +1319,26 @@ impl Resolver {
                 }
                 continue;
             };
-            if client.should_skip_for_query() {
+            if !eligible {
                 if debug_logs {
                     self.logs.push(
                         "debug",
-                        format!("dns query {qname} {qtype} route {route_id} skipped busy or degraded upstream {name}"),
+                        format!("dns query {qname} {qtype} route {route_id} skipped unhealthy upstream {name}"),
                     );
                 }
+                last_error.get_or_insert_with(|| "all selected upstreams unhealthy".to_string());
+                continue;
+            }
+            if has_eligible_upstream && client.should_skip_for_query() {
+                if debug_logs {
+                    self.logs.push(
+                        "debug",
+                        format!("dns query {qname} {qtype} route {route_id} skipped connecting upstream {name}"),
+                    );
+                }
+                last_error.get_or_insert_with(|| {
+                    "upstream connection is already being established".to_string()
+                });
                 continue;
             }
             attempt_count += 1;
@@ -1556,12 +1574,7 @@ impl UpstreamClient {
     }
 
     fn should_skip_for_query(&self) -> bool {
-        matches!(
-            self.pool_state(),
-            UpstreamPoolState::Connecting
-                | UpstreamPoolState::Degraded
-                | UpstreamPoolState::Recovering
-        )
+        self.pool_state() == UpstreamPoolState::Connecting
     }
 
     fn mark_ready(&self) {
@@ -2568,7 +2581,7 @@ async fn run_health_loop(
         }
     }
     loop {
-        if health.recent_query_success(&client.name, interval) {
+        if health.recent_healthy_query_success(&client.name, interval) {
             tokio::select! {
                 _ = stop.changed() => break,
                 _ = tokio::time::sleep(health.probe_delay(&client.name, interval)) => {}
@@ -2679,10 +2692,32 @@ impl HealthMonitor {
         }
     }
 
+    fn query_eligibility(&self, names: &[String]) -> Vec<bool> {
+        if !self.enabled {
+            return vec![true; names.len()];
+        }
+        let states = self.states.lock();
+        names
+            .iter()
+            .map(|name| states.get(name).map(|state| state.healthy).unwrap_or(false))
+            .collect()
+    }
+
+    #[cfg(test)]
     fn recent_query_success(&self, name: &str, window: Duration) -> bool {
         self.states
             .lock()
             .get(name)
+            .and_then(|state| state.last_query_success_at)
+            .map(|last_success| last_success.elapsed() < window)
+            .unwrap_or(false)
+    }
+
+    fn recent_healthy_query_success(&self, name: &str, window: Duration) -> bool {
+        self.states
+            .lock()
+            .get(name)
+            .filter(|state| state.healthy)
             .and_then(|state| state.last_query_success_at)
             .map(|last_success| last_success.elapsed() < window)
             .unwrap_or(false)
@@ -2693,15 +2728,9 @@ impl HealthMonitor {
             return interval;
         };
         if !state.healthy && state.recovery_streak > 0 {
-            return Duration::ZERO;
+            return HEALTHCHECK_RECOVERY_CONFIRM_DELAY;
         }
-        if state.healthy || state.probe_failure_streak == 0 {
-            return interval;
-        }
-        let multiplier = 1u32 << state.probe_failure_streak.saturating_sub(1).min(3);
         interval
-            .saturating_mul(multiplier)
-            .min(HEALTHCHECK_MAX_BACKOFF)
     }
 
     fn record_query_success(&self, name: &str, latency: Duration) {
@@ -2881,17 +2910,6 @@ impl HealthSnapshot {
         self.states
             .get(name)
             .map(|state| state.healthy)
-            .unwrap_or(false)
-    }
-
-    #[cfg(test)]
-    fn should_skip_for_query(&self, name: &str) -> bool {
-        if !self.enabled {
-            return false;
-        }
-        self.states
-            .get(name)
-            .map(|state| state.degraded)
             .unwrap_or(false)
     }
 
@@ -4001,6 +4019,17 @@ mod tests {
     }
 
     #[test]
+    fn health_recent_query_success_does_not_pause_recovery() {
+        let health = HealthMonitor::new(true, 1, 2, vec!["upstream".to_string()]);
+
+        health.record_failure("upstream", FailureKind::Transport, "failure");
+        health.record_query_success("upstream", Duration::from_millis(10));
+
+        assert!(health.recent_query_success("upstream", Duration::from_secs(10)));
+        assert!(!health.recent_healthy_query_success("upstream", Duration::from_secs(10)));
+    }
+
+    #[test]
     fn health_probe_delay_backs_off_after_unhealthy() {
         let health = HealthMonitor::new(true, 2, 1, vec!["upstream".to_string()]);
         let interval = Duration::from_secs(30);
@@ -4009,49 +4038,63 @@ mod tests {
         assert_eq!(health.probe_delay("upstream", interval), interval);
 
         health.record_probe_failure("upstream", "second failure");
-        assert_eq!(
-            health.probe_delay("upstream", interval),
-            Duration::from_secs(60)
-        );
+        assert_eq!(health.probe_delay("upstream", interval), interval);
 
         health.record_probe_failure("upstream", "third failure");
-        assert_eq!(
-            health.probe_delay("upstream", interval),
-            Duration::from_secs(120)
-        );
+        assert_eq!(health.probe_delay("upstream", interval), interval);
 
         health.record_probe_success("upstream", Duration::from_millis(8));
         assert_eq!(health.probe_delay("upstream", interval), interval);
     }
 
     #[test]
+    fn health_recovery_probe_uses_short_confirm_delay() {
+        let health = HealthMonitor::new(true, 1, 2, vec!["upstream".to_string()]);
+        let interval = Duration::from_secs(30);
+
+        health.record_failure("upstream", FailureKind::Transport, "failure");
+        assert_eq!(health.probe_delay("upstream", interval), interval);
+
+        health.record_probe_success("upstream", Duration::from_millis(8));
+        assert_eq!(
+            health.probe_delay("upstream", interval),
+            HEALTHCHECK_RECOVERY_CONFIRM_DELAY
+        );
+
+        health.record_probe_success("upstream", Duration::from_millis(9));
+        assert_eq!(health.probe_delay("upstream", interval), interval);
+    }
+
+    #[test]
     fn health_negative_response_does_not_degrade_upstream() {
         let health = HealthMonitor::new(true, 1, 1, vec!["upstream".to_string()]);
+        let names = vec!["upstream".to_string()];
 
         health.record_failure("upstream", FailureKind::Transport, "first failure");
-        assert!(health.snapshot().should_skip_for_query("upstream"));
+        assert_eq!(health.query_eligibility(&names), vec![false]);
 
         health.record_negative_response("upstream", Duration::from_millis(9));
 
         let snapshot = health.snapshot();
         assert!(snapshot.healthy("upstream"));
-        assert!(!snapshot.should_skip_for_query("upstream"));
+        assert_eq!(health.query_eligibility(&names), vec![true]);
     }
 
     #[test]
     fn health_transport_failure_degrades_and_success_recovers_upstream() {
         let health = HealthMonitor::new(true, 2, 1, vec!["upstream".to_string()]);
+        let names = vec!["upstream".to_string()];
 
         health.record_failure("upstream", FailureKind::Transport, "first failure");
-        assert!(!health.snapshot().should_skip_for_query("upstream"));
+        assert_eq!(health.query_eligibility(&names), vec![true]);
 
         health.record_failure("upstream", FailureKind::Transport, "second failure");
-        assert!(health.snapshot().should_skip_for_query("upstream"));
+        assert_eq!(health.query_eligibility(&names), vec![false]);
 
         health.record_probe_success("upstream", Duration::from_millis(8));
         let snapshot = health.snapshot();
         assert!(snapshot.healthy("upstream"));
-        assert!(!snapshot.should_skip_for_query("upstream"));
+        assert_eq!(health.query_eligibility(&names), vec![true]);
     }
 
     #[test]
@@ -4077,15 +4120,19 @@ mod tests {
         assert_eq!(health.probe_delay("upstream", interval), interval);
 
         health.record_probe_success("upstream", Duration::from_millis(8));
-        assert_eq!(health.probe_delay("upstream", interval), Duration::ZERO);
+        assert_eq!(
+            health.probe_delay("upstream", interval),
+            HEALTHCHECK_RECOVERY_CONFIRM_DELAY
+        );
 
         health.record_probe_success("upstream", Duration::from_millis(9));
         assert_eq!(health.probe_delay("upstream", interval), interval);
     }
 
     #[test]
-    fn health_retryable_response_does_not_degrade_upstream() {
+    fn health_retryable_response_removes_upstream_from_query_pool() {
         let health = HealthMonitor::new(true, 1, 1, vec!["upstream".to_string()]);
+        let names = vec!["upstream".to_string()];
 
         health.record_failure(
             "upstream",
@@ -4095,7 +4142,17 @@ mod tests {
 
         let snapshot = health.snapshot();
         assert!(!snapshot.healthy("upstream"));
-        assert!(!snapshot.should_skip_for_query("upstream"));
+        assert_eq!(health.query_eligibility(&names), vec![false]);
+    }
+
+    #[test]
+    fn health_disabled_keeps_all_upstreams_query_eligible() {
+        let health = HealthMonitor::new(false, 1, 1, vec!["upstream".to_string()]);
+        let names = vec!["upstream".to_string(), "missing".to_string()];
+
+        health.record_failure("upstream", FailureKind::Transport, "failure");
+
+        assert_eq!(health.query_eligibility(&names), vec![true, true]);
     }
 
     #[test]
@@ -4109,11 +4166,24 @@ mod tests {
 
         client.mark_transport_failure();
         assert_eq!(client.pool_state(), UpstreamPoolState::Degraded);
-        assert!(client.should_skip_for_query());
+        assert!(!client.should_skip_for_query());
 
         client.mark_ready();
         assert_eq!(client.pool_state(), UpstreamPoolState::Ready);
         assert!(!client.should_skip_for_query());
+    }
+
+    #[test]
+    fn upstream_pool_only_connecting_skips_without_health_state() {
+        let client = test_upstream_client();
+        client.store_pool_state(UpstreamPoolState::Degraded);
+        assert!(!client.should_skip_for_query());
+
+        client.store_pool_state(UpstreamPoolState::Recovering);
+        assert!(!client.should_skip_for_query());
+
+        client.store_pool_state(UpstreamPoolState::Connecting);
+        assert!(client.should_skip_for_query());
     }
 
     #[tokio::test]
@@ -4141,28 +4211,152 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn resolver_does_not_query_degraded_upstream() {
+    async fn resolver_does_not_query_unhealthy_upstream() {
         let mut cfg = crate::config::default_local_config();
-        cfg.resolver.timeout = "200ms".into();
+        cfg.resolver.timeout = "500ms".into();
+        cfg.healthcheck.failure_threshold = 1;
         cfg.resolver.upstreams = vec![CoreUpstreamConfig {
-            name: "degraded".into(),
+            name: "unhealthy".into(),
             endpoint: "udp://192.0.2.53:53".into(),
             ..Default::default()
         }];
         let resolver = build_resolver(&cfg, LogBuffer::new(1), DnsHistoryRecorder::disabled())
             .expect("resolver");
-        let client = resolver.clients.get("degraded").expect("upstream");
-        client.store_pool_state(UpstreamPoolState::Degraded);
+        resolver
+            .health
+            .record_failure("unhealthy", FailureKind::Transport, "healthcheck failed");
+        let client = resolver.clients.get("unhealthy").expect("upstream");
 
         let started = Instant::now();
         let resp = resolver
-            .resolve(build_query("degraded.example", TYPE_A))
+            .resolve(build_query("unhealthy.example", TYPE_A))
             .await
             .expect("servfail response");
 
         assert_eq!(rcode(&resp), Some(RCODE_SERVER_FAILURE));
-        assert_eq!(client.transport_failure_streak.load(Ordering::Acquire), 0);
         assert!(started.elapsed() < Duration::from_millis(100));
+        assert_eq!(client.transport_failure_streak.load(Ordering::Acquire), 0);
+    }
+
+    #[tokio::test]
+    #[ignore = "binds local UDP sockets for end-to-end resolver verification"]
+    async fn resolver_skips_unhealthy_first_upstream_and_queries_second_local_dns() {
+        let (bad_endpoint, bad_queries, bad_task) =
+            spawn_counting_udp_answer_upstream([192, 0, 2, 10]).await;
+        let (good_endpoint, good_queries, good_task) =
+            spawn_counting_udp_answer_upstream([192, 0, 2, 55]).await;
+        let mut cfg = crate::config::default_local_config();
+        cfg.resolver.timeout = "500ms".into();
+        cfg.healthcheck.failure_threshold = 1;
+        cfg.resolver.upstreams = vec![
+            CoreUpstreamConfig {
+                name: "bad".into(),
+                endpoint: bad_endpoint,
+                ..Default::default()
+            },
+            CoreUpstreamConfig {
+                name: "good".into(),
+                endpoint: good_endpoint,
+                ..Default::default()
+            },
+        ];
+        let resolver = build_resolver(&cfg, LogBuffer::new(1), DnsHistoryRecorder::disabled())
+            .expect("resolver");
+        resolver
+            .health
+            .record_failure("bad", FailureKind::Transport, "healthcheck failed");
+
+        let resp = resolver
+            .resolve(build_query("local-e2e.example", TYPE_A))
+            .await
+            .expect("response");
+
+        assert_eq!(rcode(&resp), Some(RCODE_SUCCESS));
+        assert_eq!(answer_count(&resp), Some(1));
+        assert!(resp.windows(4).any(|window| window == [192, 0, 2, 55]));
+        assert_eq!(bad_queries.load(Ordering::Acquire), 0);
+        assert_eq!(good_queries.load(Ordering::Acquire), 1);
+        good_task.await.expect("good upstream task");
+        bad_task.abort();
+    }
+
+    #[tokio::test]
+    #[ignore = "binds local UDP sockets and runs a long healthcheck failover scenario"]
+    async fn resolver_moves_traffic_away_and_back_after_upstream_restart() {
+        const QUERY_COUNT: usize = 1000;
+
+        let first_queries = Arc::new(AtomicU32::new(0));
+        let second_queries = Arc::new(AtomicU32::new(0));
+        let (first_endpoint, first_addr, mut first_task) = spawn_looping_udp_answer_upstream(
+            "127.0.0.1:0",
+            [192, 0, 2, 10],
+            first_queries.clone(),
+        )
+        .await;
+        let (second_endpoint, _second_addr, second_task) = spawn_looping_udp_answer_upstream(
+            "127.0.0.1:0",
+            [192, 0, 2, 55],
+            second_queries.clone(),
+        )
+        .await;
+
+        let mut cfg = crate::config::default_local_config();
+        cfg.cache.enabled = false;
+        cfg.resolver.timeout = "100ms".into();
+        cfg.healthcheck.interval = "20ms".into();
+        cfg.healthcheck.timeout = "20ms".into();
+        cfg.healthcheck.domain = "healthcheck.local".into();
+        cfg.healthcheck.failure_threshold = 1;
+        cfg.healthcheck.recovery_threshold = 1;
+        cfg.resolver.upstreams = vec![
+            CoreUpstreamConfig {
+                name: "first".into(),
+                endpoint: first_endpoint,
+                ..Default::default()
+            },
+            CoreUpstreamConfig {
+                name: "second".into(),
+                endpoint: second_endpoint,
+                ..Default::default()
+            },
+        ];
+        let resolver = build_resolver(&cfg, LogBuffer::new(1), DnsHistoryRecorder::disabled())
+            .expect("resolver");
+        let (stop_tx, _) = watch::channel(false);
+        let health_tasks = spawn_health_tasks(&cfg, &resolver, &stop_tx);
+        let upstream_names = vec!["first".to_string(), "second".to_string()];
+
+        resolve_many(&resolver, "before-restart", QUERY_COUNT).await;
+        assert_eq!(first_queries.load(Ordering::Acquire), QUERY_COUNT as u32);
+        assert_eq!(second_queries.load(Ordering::Acquire), 0);
+
+        first_task.abort();
+        let _ = (&mut first_task).await;
+        wait_for_query_eligibility(&resolver.health, &upstream_names, &[false, true]).await;
+
+        resolve_many(&resolver, "while-first-down", QUERY_COUNT).await;
+        assert_eq!(first_queries.load(Ordering::Acquire), QUERY_COUNT as u32);
+        assert_eq!(second_queries.load(Ordering::Acquire), QUERY_COUNT as u32);
+
+        let (_first_endpoint, _first_addr, restarted_first_task) =
+            spawn_looping_udp_answer_upstream(first_addr, [192, 0, 2, 10], first_queries.clone())
+                .await;
+        first_task = restarted_first_task;
+        wait_for_query_eligibility(&resolver.health, &upstream_names, &[true, true]).await;
+
+        resolve_many(&resolver, "after-first-restart", QUERY_COUNT).await;
+        assert_eq!(
+            first_queries.load(Ordering::Acquire),
+            (QUERY_COUNT * 2) as u32
+        );
+        assert_eq!(second_queries.load(Ordering::Acquire), QUERY_COUNT as u32);
+
+        let _ = stop_tx.send(true);
+        for task in health_tasks {
+            let _ = task.await;
+        }
+        first_task.abort();
+        second_task.abort();
     }
 
     #[test]
@@ -4284,5 +4478,81 @@ mod tests {
         }
         out.push(0);
         out
+    }
+
+    async fn spawn_counting_udp_answer_upstream(
+        ip: [u8; 4],
+    ) -> (String, Arc<AtomicU32>, JoinHandle<()>) {
+        let socket = UdpSocket::bind("127.0.0.1:0")
+            .await
+            .expect("bind test upstream");
+        let addr = socket.local_addr().expect("test upstream address");
+        let queries = Arc::new(AtomicU32::new(0));
+        let task_queries = queries.clone();
+        let task = tokio::spawn(async move {
+            let mut buf = [0u8; 512];
+            let (len, peer) = socket.recv_from(&mut buf).await.expect("receive query");
+            task_queries.fetch_add(1, Ordering::AcqRel);
+            let question = parse_question(&buf[..len]).expect("parse query");
+            let resp = hosts_response(&question, &[ip], &[]);
+            socket.send_to(&resp, peer).await.expect("send response");
+        });
+        (format!("udp://{addr}"), queries, task)
+    }
+
+    async fn spawn_looping_udp_answer_upstream(
+        bind_addr: impl tokio::net::ToSocketAddrs,
+        ip: [u8; 4],
+        queries: Arc<AtomicU32>,
+    ) -> (String, SocketAddr, JoinHandle<()>) {
+        let socket = UdpSocket::bind(bind_addr)
+            .await
+            .expect("bind test upstream");
+        let addr = socket.local_addr().expect("test upstream address");
+        let task = tokio::spawn(async move {
+            let mut buf = [0u8; 512];
+            loop {
+                let Ok((len, peer)) = socket.recv_from(&mut buf).await else {
+                    break;
+                };
+                let question = parse_question(&buf[..len]).expect("parse query");
+                if question.normalized_qname != "healthcheck.local" {
+                    queries.fetch_add(1, Ordering::AcqRel);
+                }
+                let resp = hosts_response(&question, &[ip], &[]);
+                let _ = socket.send_to(&resp, peer).await;
+            }
+        });
+        (format!("udp://{addr}"), addr, task)
+    }
+
+    async fn resolve_many(resolver: &Resolver, prefix: &str, count: usize) {
+        for index in 0..count {
+            let resp = resolver
+                .resolve(build_query(&format!("{prefix}-{index}.example"), TYPE_A))
+                .await
+                .expect("response");
+            assert_eq!(rcode(&resp), Some(RCODE_SUCCESS));
+            assert_eq!(answer_count(&resp), Some(1));
+        }
+    }
+
+    async fn wait_for_query_eligibility(
+        health: &Arc<HealthMonitor>,
+        names: &[String],
+        expected: &[bool],
+    ) {
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            let current = health.query_eligibility(names);
+            if current == expected {
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "timed out waiting for eligibility {expected:?}, got {current:?}"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
     }
 }
