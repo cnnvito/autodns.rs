@@ -27,7 +27,6 @@ use tauri::{
 };
 
 const TRAY_SHOW: &str = "show";
-const TRAY_HIDE: &str = "hide";
 const TRAY_TOGGLE_SERVICE: &str = "toggle-service";
 const TRAY_RESTART_SERVICE: &str = "restart-service";
 const TRAY_CLEAR_CACHE: &str = "clear-cache";
@@ -37,9 +36,11 @@ struct TrayState {
     tray: TrayIcon,
     status: MenuItem<Wry>,
     listen: MenuItem<Wry>,
+    show: MenuItem<Wry>,
     toggle_service: MenuItem<Wry>,
     restart_service: MenuItem<Wry>,
     clear_cache: MenuItem<Wry>,
+    quit: MenuItem<Wry>,
 }
 
 #[derive(Default)]
@@ -169,7 +170,6 @@ fn setup_tray(app: &mut tauri::App) -> tauri::Result<()> {
         None::<&str>,
     )?;
     let show = MenuItem::with_id(app, TRAY_SHOW, text.show, true, None::<&str>)?;
-    let hide = MenuItem::with_id(app, TRAY_HIDE, text.hide, true, None::<&str>)?;
     let toggle_service = MenuItem::with_id(
         app,
         TRAY_TOGGLE_SERVICE,
@@ -197,7 +197,6 @@ fn setup_tray(app: &mut tauri::App) -> tauri::Result<()> {
             &listen,
             &separator_1,
             &show,
-            &hide,
             &separator_2,
             &toggle_service,
             &restart_service,
@@ -236,11 +235,6 @@ fn setup_tray(app: &mut tauri::App) -> tauri::Result<()> {
                 if let Some(window) = app.get_webview_window("main") {
                     let _ = window.show();
                     let _ = window.set_focus();
-                }
-            }
-            TRAY_HIDE => {
-                if let Some(window) = app.get_webview_window("main") {
-                    let _ = window.hide();
                 }
             }
             TRAY_TOGGLE_SERVICE => {
@@ -295,9 +289,11 @@ fn setup_tray(app: &mut tauri::App) -> tauri::Result<()> {
         tray,
         status,
         listen,
+        show,
         toggle_service,
         restart_service,
         clear_cache,
+        quit,
     });
     refresh_tray_state(app.handle());
     Ok(())
@@ -314,6 +310,12 @@ pub(crate) fn refresh_tray_state(app: &tauri::AppHandle) {
         service_status.listen.as_str()
     };
     let text = tray_text();
+
+    // Language may have changed since the menu was built, so re-set every label.
+    let _ = tray_state.show.set_text(text.show);
+    let _ = tray_state.restart_service.set_text(text.restart_service);
+    let _ = tray_state.clear_cache.set_text(text.clear_cache);
+    let _ = tray_state.quit.set_text(text.quit);
 
     if service_status.running {
         let _ = tray_state
@@ -349,7 +351,6 @@ struct TrayText {
     running: &'static str,
     stopped: &'static str,
     show: &'static str,
-    hide: &'static str,
     start_service: &'static str,
     stop_service: &'static str,
     restart_service: &'static str,
@@ -357,19 +358,49 @@ struct TrayText {
     quit: &'static str,
 }
 
+const TRAY_TEXT_EN: TrayText = TrayText {
+    status_prefix: "Status: ",
+    listen_prefix: "Listen: ",
+    running: "Running",
+    stopped: "Stopped",
+    show: "Show window",
+    start_service: "Start service",
+    stop_service: "Stop service",
+    restart_service: "Restart service",
+    clear_cache: "Clear DNS cache",
+    quit: "Quit",
+};
+
+const TRAY_TEXT_ZH_CN: TrayText = TrayText {
+    status_prefix: "状态：",
+    listen_prefix: "监听：",
+    running: "运行中",
+    stopped: "已停止",
+    show: "显示窗口",
+    start_service: "启动服务",
+    stop_service: "停止服务",
+    restart_service: "重启服务",
+    clear_cache: "清空 DNS 缓存",
+    quit: "退出",
+};
+
+/// Tray labels follow the in-app language preference; "system" resolves against the OS
+/// locale the same way the frontend does.
 fn tray_text() -> TrayText {
-    TrayText {
-        status_prefix: "Status: ",
-        listen_prefix: "Listen: ",
-        running: "Running",
-        stopped: "Stopped",
-        show: "Show window",
-        hide: "Hide window",
-        start_service: "Start service",
-        stop_service: "Stop service",
-        restart_service: "Restart service",
-        clear_cache: "Clear DNS cache",
-        quit: "Quit",
+    let preference = preferences::load_desktop_preferences()
+        .map(|prefs| prefs.language)
+        .unwrap_or_else(|_| preferences::LANGUAGE_SYSTEM.to_string());
+    let use_chinese = match preference.as_str() {
+        preferences::LANGUAGE_ZH_CN => true,
+        preferences::LANGUAGE_EN_US => false,
+        _ => sys_locale::get_locale()
+            .map(|locale| locale.to_ascii_lowercase().starts_with("zh"))
+            .unwrap_or(false),
+    };
+    if use_chinese {
+        TRAY_TEXT_ZH_CN
+    } else {
+        TRAY_TEXT_EN
     }
 }
 
