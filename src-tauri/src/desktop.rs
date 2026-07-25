@@ -253,6 +253,8 @@ pub struct DnsHistoryEntry {
     pub response_code: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub min_ttl: Option<u32>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub answers: String,
     pub error: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error_message: Option<LocalizedMessage>,

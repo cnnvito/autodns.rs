@@ -342,6 +342,7 @@ fn migrate(conn: &Connection) -> Result<()> {
             attempt_count INTEGER NOT NULL,
             response_code TEXT NOT NULL,
             min_ttl INTEGER,
+            answers TEXT NOT NULL DEFAULT '',
             error TEXT NOT NULL DEFAULT '',
             created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
@@ -401,6 +402,12 @@ fn migrate(conn: &Connection) -> Result<()> {
     drop_column_if_exists(conn, "dns_query_history", "results_json")?;
     drop_column_if_exists(conn, "dns_query_history", "answer_count")?;
     add_column_if_missing(conn, "dns_query_history", "min_ttl", "INTEGER")?;
+    add_column_if_missing(
+        conn,
+        "dns_query_history",
+        "answers",
+        "TEXT NOT NULL DEFAULT ''",
+    )?;
     drop_column_if_exists(conn, "app_settings", "fallback_system_dns")?;
     drop_column_if_exists(conn, "proxies", "endpoint")?;
     drop_column_if_exists(conn, "upstreams", "endpoint")?;
@@ -1182,9 +1189,9 @@ fn insert_dns_history(conn: &mut Connection, events: &[DnsHistoryEvent]) -> Resu
             INSERT INTO dns_query_history (
                 started_at, domain, record_type, qclass, source, route_id,
                 upstream_name, upstream_protocol, duration_ms, attempt_count,
-                response_code, min_ttl, error
+                response_code, min_ttl, answers, error
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#,
         )?;
         for event in events {
@@ -1201,6 +1208,7 @@ fn insert_dns_history(conn: &mut Connection, events: &[DnsHistoryEvent]) -> Resu
                 usize_to_i64(event.attempt_count)?,
                 &event.response_code,
                 event.min_ttl.map(u32_to_i64),
+                event.answers.as_ref(),
                 &event.error,
             ])
             .context("insert dns history")?;
@@ -1242,7 +1250,7 @@ fn list_dns_history(
         SELECT
             id, started_at, domain, record_type, source, route_id,
             upstream_name, upstream_protocol, duration_ms, attempt_count,
-            response_code, min_ttl, error
+            response_code, min_ttl, answers, error
         FROM dns_query_history
         WHERE (?1 = '' OR lower(domain) LIKE '%' || lower(?1) || '%')
             AND (?2 = '' OR started_at >= ?2)
@@ -1262,7 +1270,7 @@ fn list_dns_history(
             usize_to_i64(offset)?
         ],
         |row| {
-            let error: String = row.get(12)?;
+            let error: String = row.get(13)?;
             let error_message = (!error.is_empty()).then(|| localized_error_message(&error));
             Ok(DnsHistoryEntry {
                 id: row.get(0)?,
@@ -1277,6 +1285,7 @@ fn list_dns_history(
                 attempt_count: i64_to_usize(row.get(9)?)?,
                 response_code: row.get(10)?,
                 min_ttl: row.get::<_, Option<i64>>(11)?.map(i64_to_u32).transpose()?,
+                answers: row.get(12)?,
                 error,
                 error_message,
             })
@@ -1423,7 +1432,7 @@ fn dns_history_overview(conn: &mut Connection) -> Result<DnsHistoryOverview> {
         SELECT
             id, started_at, domain, record_type, source, route_id,
             upstream_name, upstream_protocol, duration_ms, attempt_count,
-            response_code, min_ttl, error
+            response_code, min_ttl, answers, error
         FROM dns_query_history
         WHERE started_at >= ?
             AND (source = 'error' OR response_code <> 'NOERROR' OR error <> '')
@@ -1432,7 +1441,7 @@ fn dns_history_overview(conn: &mut Connection) -> Result<DnsHistoryOverview> {
         "#,
     )?;
     let error_rows = error_stmt.query_map(params![&window_started_at], |row| {
-        let error: String = row.get(12)?;
+        let error: String = row.get(13)?;
         let error_message = (!error.is_empty()).then(|| localized_error_message(&error));
         Ok(DnsHistoryEntry {
             id: row.get(0)?,
@@ -1447,6 +1456,7 @@ fn dns_history_overview(conn: &mut Connection) -> Result<DnsHistoryOverview> {
             attempt_count: i64_to_usize(row.get(9)?)?,
             response_code: row.get(10)?,
             min_ttl: row.get::<_, Option<i64>>(11)?.map(i64_to_u32).transpose()?,
+            answers: row.get(12)?,
             error,
             error_message,
         })
@@ -1604,7 +1614,10 @@ mod tests {
                 attempt_count: 1,
                 response_code: "NOERROR".into(),
                 min_ttl: Some(42),
-                error: String::new(),
+                // Distinct non-empty values so a column-order mixup between `answers` and
+                // `error` cannot round-trip silently.
+                answers: "192.0.2.1, 192.0.2.2".into(),
+                error: "boom".into(),
             }])
             .expect("insert history");
 
@@ -1614,6 +1627,8 @@ mod tests {
 
         assert_eq!(history.items.len(), 1);
         assert_eq!(history.items[0].min_ttl, Some(42));
+        assert_eq!(history.items[0].answers, "192.0.2.1, 192.0.2.2");
+        assert_eq!(history.items[0].error, "boom");
 
         drop(store);
         let _ = std::fs::remove_file(path);
@@ -1640,6 +1655,7 @@ mod tests {
                     attempt_count: 1,
                     response_code: "NOERROR".into(),
                     min_ttl: Some(42),
+                    answers: "".into(),
                     error: String::new(),
                 },
                 DnsHistoryEvent {
@@ -1655,6 +1671,7 @@ mod tests {
                     attempt_count: 2,
                     response_code: "SERVFAIL".into(),
                     min_ttl: None,
+                    answers: "".into(),
                     error: "all upstreams failed".into(),
                 },
                 DnsHistoryEvent {
@@ -1670,6 +1687,7 @@ mod tests {
                     attempt_count: 2,
                     response_code: "SERVFAIL".into(),
                     min_ttl: None,
+                    answers: "".into(),
                     error: "old failure".into(),
                 },
             ])
@@ -1712,6 +1730,7 @@ mod tests {
                     attempt_count: 1,
                     response_code: "NOERROR".into(),
                     min_ttl: Some(42),
+                    answers: "".into(),
                     error: String::new(),
                 },
                 DnsHistoryEvent {
@@ -1727,6 +1746,7 @@ mod tests {
                     attempt_count: 1,
                     response_code: "NOERROR".into(),
                     min_ttl: Some(60),
+                    answers: "".into(),
                     error: String::new(),
                 },
             ])
@@ -1776,6 +1796,7 @@ mod tests {
                     attempt_count: 0,
                     response_code: "NOERROR".into(),
                     min_ttl: Some(60),
+                    answers: "".into(),
                     error: String::new(),
                 },
                 DnsHistoryEvent {
@@ -1791,6 +1812,7 @@ mod tests {
                     attempt_count: 2,
                     response_code: "SERVFAIL".into(),
                     min_ttl: None,
+                    answers: "".into(),
                     error: "all upstreams failed".into(),
                 },
                 DnsHistoryEvent {
@@ -1806,6 +1828,7 @@ mod tests {
                     attempt_count: 1,
                     response_code: "NOERROR".into(),
                     min_ttl: Some(60),
+                    answers: "".into(),
                     error: String::new(),
                 },
             ])

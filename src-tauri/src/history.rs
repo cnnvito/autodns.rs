@@ -126,6 +126,7 @@ pub(crate) struct DnsHistoryEvent {
     pub attempt_count: usize,
     pub response_code: String,
     pub min_ttl: Option<u32>,
+    pub answers: Arc<str>,
     pub error: String,
 }
 
