@@ -3,8 +3,8 @@ use crate::desktop::{CertificateDefaults, GenerateCertificateRequest, GeneratedC
 use anyhow::{anyhow, Context, Result};
 use chrono::{Datelike, Utc};
 use rcgen::{
-    BasicConstraints, Certificate, CertificateParams, DistinguishedName, DnType, IsCa, KeyPair,
-    SanType, PKCS_ECDSA_P256_SHA256,
+    BasicConstraints, Certificate, CertificateParams, DistinguishedName, DnType, IsCa, Issuer,
+    KeyPair, SanType, PKCS_ECDSA_P256_SHA256,
 };
 use std::fs;
 use std::net::IpAddr;
@@ -50,21 +50,21 @@ pub fn generate_certificate(req: GenerateCertificateRequest) -> Result<Generated
     let cert_file = output_dir.join(cert_file_name(&file_prefix, &suffix, "server"));
     let key_file = output_dir.join(key_file_name(&file_prefix, &suffix, "server"));
 
-    let ca = build_ca_certificate(&common_name, &organization, valid_days)?;
-    let server = build_server_certificate(
+    let (ca_certificate, ca_issuer) =
+        build_ca_certificate(&common_name, &organization, valid_days)?;
+    let (server_certificate, server_key_pair) = build_server_certificate(
         &common_name,
         &organization,
         valid_days,
         &domains,
         &parsed_ips,
+        &ca_issuer,
     )?;
 
-    let ca_pem = ca.serialize_pem().context("serialize ca certificate")?;
-    let ca_key_pem = ca.serialize_private_key_pem();
-    let cert_pem = server
-        .serialize_pem_with_signer(&ca)
-        .context("serialize server certificate")?;
-    let key_pem = server.serialize_private_key_pem();
+    let ca_pem = ca_certificate.pem();
+    let ca_key_pem = ca_issuer.key().serialize_pem();
+    let cert_pem = server_certificate.pem();
+    let key_pem = server_key_pair.serialize_pem();
 
     write_new_file(&ca_cert_file, ca_pem.as_bytes(), false)?;
     write_new_file(&ca_key_file, ca_key_pem.as_bytes(), true)?;
@@ -195,13 +195,18 @@ fn build_ca_certificate(
     common_name: &str,
     organization: &str,
     valid_days: u32,
-) -> Result<Certificate> {
-    let mut params = CertificateParams::new(vec![common_name.to_string()]);
+) -> Result<(Certificate, Issuer<'static, KeyPair>)> {
+    let mut params = CertificateParams::new(vec![common_name.to_string()])
+        .context("build ca certificate parameters")?;
     params.distinguished_name = distinguished_name(common_name, organization);
     params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
     params.not_after = cert_not_after(valid_days);
-    params.key_pair = Some(KeyPair::generate(&PKCS_ECDSA_P256_SHA256)?);
-    Certificate::from_params(params).context("build ca certificate")
+    let key_pair =
+        KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256).context("generate ca certificate key")?;
+    let certificate = params
+        .self_signed(&key_pair)
+        .context("build ca certificate")?;
+    Ok((certificate, Issuer::new(params, key_pair)))
 }
 
 fn build_server_certificate(
@@ -210,15 +215,21 @@ fn build_server_certificate(
     valid_days: u32,
     domains: &[String],
     ips: &[IpAddr],
-) -> Result<Certificate> {
-    let mut params = CertificateParams::new(domains.to_vec());
+    issuer: &Issuer<'_, KeyPair>,
+) -> Result<(Certificate, KeyPair)> {
+    let mut params =
+        CertificateParams::new(domains.to_vec()).context("build server certificate parameters")?;
     params.distinguished_name = distinguished_name(common_name, organization);
     params
         .subject_alt_names
         .extend(ips.iter().copied().map(SanType::IpAddress));
     params.not_after = cert_not_after(valid_days);
-    params.key_pair = Some(KeyPair::generate(&PKCS_ECDSA_P256_SHA256)?);
-    Certificate::from_params(params).context("build server certificate")
+    let key_pair = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256)
+        .context("generate server certificate key")?;
+    let certificate = params
+        .signed_by(&key_pair, issuer)
+        .context("build server certificate")?;
+    Ok((certificate, key_pair))
 }
 
 fn cert_not_after(valid_days: u32) -> time::OffsetDateTime {
