@@ -45,7 +45,12 @@ export const enUS = {
     dirtyValidation: "{{count}} configuration issue found. Fix it before saving.",
     dirtyValidation_plural: "{{count}} configuration issues found. Fix them before saving.",
     saved: "Saved",
-    unsaved: "Unsaved"
+    unsaved: "Unsaved",
+    autoSaveWaiting: "Auto-save pending",
+    autoSaving: "Auto-saving",
+    autoSaved: "Auto-saved",
+    autoSaveBlocked: "Finish the field and fix validation errors to auto-save",
+    autoSaveFailed: "Auto-save failed; the next edit will retry"
   },
   errors: {
     command: {
@@ -92,8 +97,8 @@ export const enUS = {
     cacheClearFailed: "Failed to clear cache",
     cacheClearedCount: "Removed {{count}} cached records.",
     cacheClearedEmpty: "There are no cached records to clear.",
-    configDiscarded: "Changes discarded",
-    configDiscardedDescription: "Configuration was restored to the last saved version.",
+    configDiscarded: "Manual changes discarded",
+    configDiscardedDescription: "Manual configuration changes were restored to the last saved version.",
     configSaved: "Configuration saved",
     configSavedDescription: "The local configuration store was updated.",
     configSavedHotReloaded: "Configuration saved and applied",
@@ -231,7 +236,7 @@ export const enUS = {
       keyPem: "DoH/DoT mode requires a private key PEM."
     },
     resolver: {
-      timeout: "Timeout format is invalid, for example 5s or 500ms.",
+      timeout: "Timeout must be greater than zero, for example 5s or 500ms.",
       bootstrapDns: "Bootstrap DNS must be an IP or IP:port."
     },
     upstream: {

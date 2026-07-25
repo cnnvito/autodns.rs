@@ -44,7 +44,12 @@ export const zhCN = {
     dirtyHintRestart: "监听入口已变更，保存时会自动重启服务。",
     dirtyValidation: "发现 {{count}} 个配置问题，请修正后再保存。",
     saved: "已保存",
-    unsaved: "未保存"
+    unsaved: "未保存",
+    autoSaveWaiting: "即将自动保存",
+    autoSaving: "正在自动保存",
+    autoSaved: "已自动保存",
+    autoSaveBlocked: "输入完成并通过校验后自动保存",
+    autoSaveFailed: "自动保存失败，将在下次修改时重试"
   },
   errors: {
     command: {
@@ -91,8 +96,8 @@ export const zhCN = {
     cacheClearFailed: "清理缓存失败",
     cacheClearedCount: "已移除 {{count}} 条缓存记录。",
     cacheClearedEmpty: "当前没有可清理的缓存记录。",
-    configDiscarded: "已放弃修改",
-    configDiscardedDescription: "配置已恢复到上次保存状态。",
+    configDiscarded: "已放弃手动修改",
+    configDiscardedDescription: "手动配置已恢复到上次保存状态。",
     configSaved: "配置已保存",
     configSavedDescription: "本地配置库已更新。",
     configSavedHotReloaded: "配置已保存并生效",
@@ -230,7 +235,7 @@ export const zhCN = {
       keyPem: "DoH/DoT 模式需要私钥 PEM。"
     },
     resolver: {
-      timeout: "超时时间格式无效，例如 5s、500ms。",
+      timeout: "超时时间必须大于 0，例如 5s、500ms。",
       bootstrapDns: "Bootstrap DNS 必须是 IP 或 IP:端口。"
     },
     upstream: {

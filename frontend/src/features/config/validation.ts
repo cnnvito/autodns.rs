@@ -14,6 +14,7 @@ export type ConfigValidation = {
   };
   resolver: {
     timeout?: string;
+    defaultProxy?: string;
     bootstrapDns: Record<number, string>;
     upstreams: Record<number, Partial<Record<"name" | "endpoint" | "serverName" | "proxy", string>>>;
     proxies: Record<number, Partial<Record<"name" | "address" | "port", string>>>;
@@ -66,6 +67,12 @@ export function hasValidationErrors(validation: ConfigValidation): boolean {
 export function flattenValidationMessages(validation: ConfigValidation): string[] {
   const messages: string[] = [];
   collect(validation.server, messages);
+  if (validation.resolver.timeout) {
+    messages.push(validation.resolver.timeout);
+  }
+  if (validation.resolver.defaultProxy) {
+    messages.push(validation.resolver.defaultProxy);
+  }
   collect(validation.resolver.bootstrapDns, messages);
   Object.values(validation.resolver.upstreams).forEach((item) => collect(item, messages));
   Object.values(validation.resolver.proxies).forEach((item) => collect(item, messages));
@@ -108,7 +115,7 @@ function validateServer(config: DesktopConfig, result: ConfigValidation, t: Tran
 }
 
 function validateResolver(config: DesktopConfig, result: ConfigValidation, t: Translate) {
-  if (!isDuration(config.resolver.timeout)) {
+  if (!isPositiveDuration(config.resolver.timeout)) {
     result.resolver.timeout = t("validation.resolver.timeout");
   }
   config.resolver.bootstrapDns.forEach((server, index) => {
@@ -157,6 +164,9 @@ function validateResolver(config: DesktopConfig, result: ConfigValidation, t: Tr
       result.resolver.proxies[index] = errors;
     }
   });
+  if (config.resolver.defaultProxy && !proxyNames.has(config.resolver.defaultProxy)) {
+    result.resolver.defaultProxy = t("validation.upstream.proxyMissing");
+  }
 
   config.resolver.hosts.forEach((raw, index) => {
     const row = parseHost(raw);
@@ -283,6 +293,16 @@ function parseHostPort(value: string): { host: string; port: string } | null {
 function isDuration(value: string): boolean {
   const trimmed = value.trim();
   return Boolean(trimmed && /^(?:\d+(?:\.\d+)?(?:ms|s|m|h))+$/.test(trimmed));
+}
+
+function isPositiveDuration(value: string): boolean {
+  const trimmed = value.trim();
+  const parts = trimmed.match(/\d+(?:\.\d+)?(?:ms|s|m|h)/g);
+  return Boolean(
+    parts
+      && parts.join("") === trimmed
+      && parts.some((part) => Number.parseFloat(part) > 0)
+  );
 }
 
 function isValidPort(value: string): boolean {

@@ -9,6 +9,7 @@ import type { ConfigPageProps } from "../features/config/doc";
 import type { ConfigValidation } from "../features/config/validation";
 import { generateServerCertificate, loadCertificateDefaults, validateServerCertificate } from "../shared/api";
 import { errorMessage } from "../shared/format";
+import { CommitOnBlurInput } from "../shared/CommitOnBlurInput";
 import type { CertificateDefaults, DesktopConfig, DesktopPreferences, GeneratedCertificate, SystemDnsSettings, SystemDnsStatus } from "../shared/types";
 import { SystemDnsPage } from "./SystemDnsPage";
 
@@ -426,7 +427,7 @@ export function SettingsPage({
             <SystemDnsPage
               embedded
               systemDns={systemDns}
-              loading={systemDnsLoading}
+              loading={systemDnsLoading || busy}
               running={running}
               onSystemDnsSettingsChange={onSystemDnsSettingsChange}
               onApplySystemDns={onApplySystemDns}
@@ -469,17 +470,17 @@ export function SettingsPage({
               </SettingRow>
               <SettingRow title={t("settings.healthInterval")}>
                 <ValidatedInput error={validation.healthcheck.interval}>
-                  <Input status={validation.healthcheck.interval ? "error" : undefined} value={cfg.healthcheck.interval} onChange={(event) => updateHealthcheck("interval", event.target.value)} placeholder="30s" />
+                  <CommitOnBlurInput status={validation.healthcheck.interval ? "error" : undefined} value={cfg.healthcheck.interval} onCommit={(value) => updateHealthcheck("interval", value)} placeholder="30s" />
                 </ValidatedInput>
               </SettingRow>
               <SettingRow title={t("settings.healthTimeout")}>
                 <ValidatedInput error={validation.healthcheck.timeout}>
-                  <Input status={validation.healthcheck.timeout ? "error" : undefined} value={cfg.healthcheck.timeout} onChange={(event) => updateHealthcheck("timeout", event.target.value)} placeholder="2s" />
+                  <CommitOnBlurInput status={validation.healthcheck.timeout ? "error" : undefined} value={cfg.healthcheck.timeout} onCommit={(value) => updateHealthcheck("timeout", value)} placeholder="2s" />
                 </ValidatedInput>
               </SettingRow>
               <SettingRow title={t("settings.healthDomain")}>
                 <ValidatedInput error={validation.healthcheck.domain}>
-                  <Input status={validation.healthcheck.domain ? "error" : undefined} value={cfg.healthcheck.domain} onChange={(event) => updateHealthcheck("domain", event.target.value)} placeholder="." />
+                  <CommitOnBlurInput status={validation.healthcheck.domain ? "error" : undefined} value={cfg.healthcheck.domain} onCommit={(value) => updateHealthcheck("domain", value)} placeholder="." />
                 </ValidatedInput>
               </SettingRow>
               <SettingRow title={t("settings.failureThreshold")}>
@@ -546,6 +547,13 @@ export function SettingsPage({
 
 function InlineNumberSetting({ value, error, onChange }: { value: number; error?: string; onChange: (value: number) => void }) {
   const { t } = useTranslation();
+  const [draftValue, setDraftValue] = useState<number | string>(value);
+
+  useEffect(() => {
+    if (draftValue !== "") {
+      setDraftValue(value);
+    }
+  }, [value]);
 
   return (
     <ValidatedInput error={error}>
@@ -553,9 +561,25 @@ function InlineNumberSetting({ value, error, onChange }: { value: number; error?
         className="workbenchInlineNumber"
         status={error ? "error" : undefined}
         min={0}
-        value={value}
+        value={draftValue}
         placeholder={t("settings.defaultPlaceholder")}
-        onChange={(next) => onChange(typeof next === "number" && Number.isFinite(next) ? next : 0)}
+        onChange={(next) => {
+          if (next === null || next === undefined || next === "") {
+            setDraftValue("");
+            return;
+          }
+          setDraftValue(next);
+        }}
+        onBlur={() => {
+          if (draftValue === "") {
+            setDraftValue(value);
+            return;
+          }
+          if (typeof draftValue === "number" && Number.isFinite(draftValue) && draftValue !== value) {
+            onChange(draftValue);
+          }
+        }}
+        onPressEnter={(event) => event.currentTarget.blur()}
       />
     </ValidatedInput>
   );

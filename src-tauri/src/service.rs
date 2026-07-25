@@ -20,6 +20,7 @@ use std::sync::{
     Arc,
 };
 use std::time::Duration;
+use tokio::sync::Mutex as AsyncMutex;
 
 pub struct DesktopService {
     inner: Mutex<ServiceState>,
@@ -30,6 +31,7 @@ pub struct DesktopService {
     history: Mutex<Option<DnsHistoryRecorder>>,
     logs: LogBuffer,
     allow_quit: AtomicBool,
+    mutation: AsyncMutex<()>,
 }
 
 #[derive(Default)]
@@ -55,6 +57,7 @@ impl DesktopService {
             history: Mutex::new(None),
             logs: LogBuffer::new(1000),
             allow_quit: AtomicBool::new(false),
+            mutation: AsyncMutex::new(()),
         }
     }
 
@@ -84,6 +87,11 @@ impl DesktopService {
     }
 
     pub async fn start(&self, _config_path: String) -> Result<()> {
+        let _mutation = self.mutation.lock().await;
+        self.start_inner().await
+    }
+
+    async fn start_inner(&self) -> Result<()> {
         {
             let inner = self.inner.lock();
             if inner.status.running {
@@ -128,6 +136,11 @@ impl DesktopService {
     }
 
     pub async fn stop(&self) -> Result<()> {
+        let _mutation = self.mutation.lock().await;
+        self.stop_inner().await
+    }
+
+    async fn stop_inner(&self) -> Result<()> {
         let runtime = {
             let mut inner = self.inner.lock();
             if !inner.status.running {
@@ -301,20 +314,58 @@ impl DesktopService {
     }
 
     pub async fn apply_config(&self, doc: ConfigDocument) -> Result<ApplyConfigResult> {
-        self.store()?.save_document(doc)?;
-        if let Ok(core) = self.store()?.runtime_config() {
-            self.logs.set_level(&core.log.level);
-        }
-        if self.status().running {
-            let core = self.store()?.runtime_config()?;
-            if self.try_reload(core.clone()).await? {
-                return Ok(ApplyConfigResult {
-                    action: ApplyConfigAction::HotReloaded,
-                    status: self.status(),
-                });
+        let _mutation = self.mutation.lock().await;
+        let store = self.store()?;
+        let previous = store.load_document()?;
+        store.save_document(doc)?;
+        let core = match store.runtime_config() {
+            Ok(core) => core,
+            Err(err) => {
+                if let Err(rollback_err) = store.save_document(previous) {
+                    return Err(anyhow!(
+                        "apply configuration failed: {err}; restore previous configuration failed: {rollback_err}"
+                    ));
+                }
+                return Err(err);
             }
-            self.stop().await?;
-            self.start(String::new()).await?;
+        };
+        self.logs.set_level(&core.log.level);
+        if self.status().running {
+            match self.try_reload(core.clone()).await {
+                Ok(true) => {
+                    return Ok(ApplyConfigResult {
+                        action: ApplyConfigAction::HotReloaded,
+                        status: self.status(),
+                    });
+                }
+                Ok(false) => {}
+                Err(err) => {
+                    if let Err(rollback_err) = store.save_document(previous) {
+                        return Err(anyhow!(
+                            "apply configuration failed: {err}; restore previous configuration failed: {rollback_err}"
+                        ));
+                    }
+                    if let Ok(previous_core) = store.runtime_config() {
+                        self.logs.set_level(&previous_core.log.level);
+                    }
+                    return Err(err);
+                }
+            }
+
+            self.stop_inner().await?;
+            if let Err(err) = self.start_inner().await {
+                if let Err(rollback_err) = store.save_document(previous) {
+                    return Err(anyhow!(
+                        "restart with new configuration failed: {err}; restore previous configuration failed: {rollback_err}"
+                    ));
+                }
+                if let Err(restart_err) = self.start_inner().await {
+                    return Err(anyhow!(
+                        "restart with new configuration failed: {err}; restart with previous configuration also failed: {restart_err}"
+                    ));
+                }
+                return Err(err);
+            }
             return Ok(ApplyConfigResult {
                 action: ApplyConfigAction::Restarted,
                 status: self.status(),
@@ -467,7 +518,11 @@ impl DesktopService {
             return Ok(false);
         }
 
-        runtime.reload(core.clone(), self.logs.clone()).await?;
+        if let Err(err) = runtime.reload(core.clone(), self.logs.clone()).await {
+            let mut inner = self.inner.lock();
+            inner.runtime = Some(runtime);
+            return Err(err);
+        }
         if let Some(listener) = self.status_listener.lock().clone() {
             runtime.set_health_listener(listener);
         }

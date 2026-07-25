@@ -61,6 +61,8 @@ const DNS_WIRE_LIMIT: usize = 65535;
 const MAX_CONCURRENT_REQUESTS: usize = 256;
 const MAX_CONCURRENT_HEALTHCHECKS: usize = 4;
 const HEALTHCHECK_STAGGER_STEP: Duration = Duration::from_millis(200);
+const HEALTHCHECK_FAILURE_RETRY_BASE_DELAY: Duration = Duration::from_secs(1);
+const HEALTHCHECK_FAILURE_RETRY_MAX_DELAY: Duration = Duration::from_secs(30);
 const HEALTHCHECK_RECOVERY_CONFIRM_DELAY: Duration = Duration::from_millis(200);
 const BOOTSTRAP_LOOKUP_TIMEOUT: Duration = Duration::from_secs(2);
 const DEFAULT_RESOLVER_TIMEOUT: Duration = Duration::from_secs(5);
@@ -2638,6 +2640,39 @@ async fn wait_for_healthcheck_permit(
     }
 }
 
+fn healthcheck_failure_backoff_delay(
+    upstream_name: &str,
+    failure_streak: u32,
+    interval: Duration,
+) -> Duration {
+    let max_delay = interval.min(HEALTHCHECK_FAILURE_RETRY_MAX_DELAY);
+    let base_delay = HEALTHCHECK_FAILURE_RETRY_BASE_DELAY.min(max_delay);
+    if base_delay.is_zero() {
+        return Duration::ZERO;
+    }
+    let exponent = failure_streak.saturating_sub(1).min(16);
+    let multiplier = 1u32 << exponent;
+    let delay = base_delay.saturating_mul(multiplier).min(max_delay);
+    with_stable_jitter(delay, upstream_name, failure_streak).min(max_delay)
+}
+
+fn with_stable_jitter(delay: Duration, upstream_name: &str, failure_streak: u32) -> Duration {
+    let delay_ms = delay.as_millis();
+    let jitter_window = delay_ms / 5;
+    if jitter_window == 0 {
+        return delay;
+    }
+    let mut hash = u64::from(failure_streak);
+    for byte in upstream_name.bytes() {
+        hash = hash.wrapping_mul(31).wrapping_add(u64::from(byte));
+    }
+    let span = (jitter_window * 2 + 1) as u64;
+    let offset = u128::from(hash % span);
+    let jittered_ms = delay_ms + offset;
+    let jittered_ms = jittered_ms.saturating_sub(jitter_window);
+    Duration::from_millis(jittered_ms.min(u128::from(u64::MAX)) as u64)
+}
+
 impl HealthMonitor {
     fn new(
         enabled: bool,
@@ -2699,7 +2734,12 @@ impl HealthMonitor {
         let states = self.states.lock();
         names
             .iter()
-            .map(|name| states.get(name).map(|state| state.healthy).unwrap_or(false))
+            .map(|name| {
+                states
+                    .get(name)
+                    .map(|state| state.healthy && !state.degraded)
+                    .unwrap_or(false)
+            })
             .collect()
     }
 
@@ -2717,7 +2757,7 @@ impl HealthMonitor {
         self.states
             .lock()
             .get(name)
-            .filter(|state| state.healthy)
+            .filter(|state| state.healthy && !state.degraded)
             .and_then(|state| state.last_query_success_at)
             .map(|last_success| last_success.elapsed() < window)
             .unwrap_or(false)
@@ -2727,8 +2767,11 @@ impl HealthMonitor {
         let Some(state) = self.states.lock().get(name).cloned() else {
             return interval;
         };
-        if !state.healthy && state.recovery_streak > 0 {
+        if state.degraded && state.recovery_streak > 0 {
             return HEALTHCHECK_RECOVERY_CONFIRM_DELAY;
+        }
+        if state.degraded {
+            return healthcheck_failure_backoff_delay(name, state.probe_failure_streak, interval);
         }
         interval
     }
@@ -2757,7 +2800,6 @@ impl HealthMonitor {
             };
             state.last_error = None;
             state.last_success_at = Some(Utc::now().to_rfc3339());
-            state.degraded = false;
             if real_query {
                 state.last_query_success_at = Some(Instant::now());
             }
@@ -2765,21 +2807,24 @@ impl HealthMonitor {
             state.probe_failure_streak = 0;
             if self.enabled {
                 state.failure_streak = 0;
-                if state.healthy {
-                    state.recovery_streak = 0;
-                } else {
+                if state.degraded {
                     state.recovery_streak += 1;
                     if state.recovery_streak >= self.recovery_threshold {
                         state.healthy = true;
+                        state.degraded = false;
                         state.recovery_streak = 0;
                     }
+                } else {
+                    state.recovery_streak = 0;
                 }
+            } else {
+                state.degraded = false;
             }
         }
         self.notify_listener();
     }
 
-    fn record_failure(&self, name: &str, kind: FailureKind, err: impl Into<String>) {
+    fn record_failure(&self, name: &str, _kind: FailureKind, err: impl Into<String>) {
         {
             let mut states = self.states.lock();
             let Some(state) = states.get_mut(name) else {
@@ -2789,14 +2834,12 @@ impl HealthMonitor {
             state.last_error = Some(err.into());
             state.probe_failure_streak = state.probe_failure_streak.saturating_add(1);
             if self.enabled {
+                state.degraded = true;
                 state.recovery_streak = 0;
                 if state.healthy {
                     state.failure_streak += 1;
                     if state.failure_streak >= self.failure_threshold {
                         state.healthy = false;
-                        if matches!(kind, FailureKind::Transport) {
-                            state.degraded = true;
-                        }
                         state.failure_streak = 0;
                     }
                 }
@@ -3728,6 +3771,13 @@ mod tests {
         }
     }
 
+    fn assert_duration_between(value: Duration, min: Duration, max: Duration) {
+        assert!(
+            value >= min && value <= max,
+            "expected {value:?} between {min:?} and {max:?}",
+        );
+    }
+
     #[test]
     fn listener_bind_error_explains_port_conflict() {
         let err = listener_bind_error("UDP", "127.0.0.1:53", io::Error::from(ErrorKind::AddrInUse))
@@ -4030,21 +4080,62 @@ mod tests {
     }
 
     #[test]
+    fn health_degraded_upstream_ignores_recent_query_success_for_probe_skip() {
+        let health = HealthMonitor::new(true, 3, 2, vec!["upstream".to_string()]);
+
+        health.record_query_success("upstream", Duration::from_millis(10));
+        assert!(health.recent_healthy_query_success("upstream", Duration::from_secs(10)));
+
+        health.record_failure("upstream", FailureKind::Transport, "failure");
+
+        assert!(health.recent_query_success("upstream", Duration::from_secs(10)));
+        assert!(!health.recent_healthy_query_success("upstream", Duration::from_secs(10)));
+    }
+
+    #[test]
     fn health_probe_delay_backs_off_after_unhealthy() {
         let health = HealthMonitor::new(true, 2, 1, vec!["upstream".to_string()]);
         let interval = Duration::from_secs(30);
 
         health.record_probe_failure("upstream", "first failure");
-        assert_eq!(health.probe_delay("upstream", interval), interval);
+        assert_duration_between(
+            health.probe_delay("upstream", interval),
+            Duration::from_millis(800),
+            Duration::from_millis(1200),
+        );
 
         health.record_probe_failure("upstream", "second failure");
-        assert_eq!(health.probe_delay("upstream", interval), interval);
+        assert_duration_between(
+            health.probe_delay("upstream", interval),
+            Duration::from_millis(1600),
+            Duration::from_millis(2400),
+        );
 
         health.record_probe_failure("upstream", "third failure");
-        assert_eq!(health.probe_delay("upstream", interval), interval);
+        assert_duration_between(
+            health.probe_delay("upstream", interval),
+            Duration::from_millis(3200),
+            Duration::from_millis(4800),
+        );
 
         health.record_probe_success("upstream", Duration::from_millis(8));
         assert_eq!(health.probe_delay("upstream", interval), interval);
+    }
+
+    #[test]
+    fn health_probe_delay_caps_failure_backoff() {
+        let health = HealthMonitor::new(true, 1, 1, vec!["upstream".to_string()]);
+        let interval = Duration::from_secs(60);
+
+        for index in 0..10 {
+            health.record_probe_failure("upstream", format!("failure {index}"));
+        }
+
+        assert_duration_between(
+            health.probe_delay("upstream", interval),
+            Duration::from_secs(24),
+            HEALTHCHECK_FAILURE_RETRY_MAX_DELAY,
+        );
     }
 
     #[test]
@@ -4053,7 +4144,11 @@ mod tests {
         let interval = Duration::from_secs(30);
 
         health.record_failure("upstream", FailureKind::Transport, "failure");
-        assert_eq!(health.probe_delay("upstream", interval), interval);
+        assert_duration_between(
+            health.probe_delay("upstream", interval),
+            Duration::from_millis(800),
+            Duration::from_millis(1200),
+        );
 
         health.record_probe_success("upstream", Duration::from_millis(8));
         assert_eq!(
@@ -4086,9 +4181,11 @@ mod tests {
         let names = vec!["upstream".to_string()];
 
         health.record_failure("upstream", FailureKind::Transport, "first failure");
-        assert_eq!(health.query_eligibility(&names), vec![true]);
+        assert!(health.snapshot().healthy("upstream"));
+        assert_eq!(health.query_eligibility(&names), vec![false]);
 
         health.record_failure("upstream", FailureKind::Transport, "second failure");
+        assert!(!health.snapshot().healthy("upstream"));
         assert_eq!(health.query_eligibility(&names), vec![false]);
 
         health.record_probe_success("upstream", Duration::from_millis(8));
@@ -4100,15 +4197,37 @@ mod tests {
     #[test]
     fn health_requires_configured_recovery_successes() {
         let health = HealthMonitor::new(true, 1, 2, vec!["upstream".to_string()]);
+        let names = vec!["upstream".to_string()];
 
         health.record_failure("upstream", FailureKind::Transport, "failure");
         assert!(!health.snapshot().healthy("upstream"));
+        assert_eq!(health.query_eligibility(&names), vec![false]);
 
         health.record_probe_success("upstream", Duration::from_millis(8));
         assert!(!health.snapshot().healthy("upstream"));
+        assert_eq!(health.query_eligibility(&names), vec![false]);
 
         health.record_probe_success("upstream", Duration::from_millis(9));
         assert!(health.snapshot().healthy("upstream"));
+        assert_eq!(health.query_eligibility(&names), vec![true]);
+    }
+
+    #[test]
+    fn health_ejects_from_query_pool_before_displaying_unhealthy() {
+        let health = HealthMonitor::new(true, 3, 2, vec!["upstream".to_string()]);
+        let names = vec!["upstream".to_string()];
+
+        health.record_failure("upstream", FailureKind::Transport, "first failure");
+
+        assert!(health.snapshot().healthy("upstream"));
+        assert_eq!(health.query_eligibility(&names), vec![false]);
+
+        health.record_probe_success("upstream", Duration::from_millis(8));
+        assert_eq!(health.query_eligibility(&names), vec![false]);
+
+        health.record_probe_success("upstream", Duration::from_millis(9));
+        assert!(health.snapshot().healthy("upstream"));
+        assert_eq!(health.query_eligibility(&names), vec![true]);
     }
 
     #[test]
@@ -4117,7 +4236,11 @@ mod tests {
         let interval = Duration::from_secs(30);
 
         health.record_failure("upstream", FailureKind::Transport, "failure");
-        assert_eq!(health.probe_delay("upstream", interval), interval);
+        assert_duration_between(
+            health.probe_delay("upstream", interval),
+            Duration::from_millis(800),
+            Duration::from_millis(1200),
+        );
 
         health.record_probe_success("upstream", Duration::from_millis(8));
         assert_eq!(

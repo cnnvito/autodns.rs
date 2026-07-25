@@ -103,14 +103,19 @@ pub fn run() {
                 }
 
                 match preferences::load_desktop_preferences() {
-                    Ok(prefs) if prefs.close_behavior == preferences::CLOSE_BEHAVIOR_QUIT => {}
+                    Ok(prefs) if prefs.close_behavior == preferences::CLOSE_BEHAVIOR_QUIT => {
+                        api.prevent_close();
+                        let _ = window
+                            .emit("desktop:close-requested", preferences::CLOSE_BEHAVIOR_QUIT);
+                    }
                     Ok(prefs) if prefs.close_behavior == preferences::CLOSE_BEHAVIOR_HIDE => {
                         api.prevent_close();
                         let _ = window.hide();
                     }
                     _ => {
                         api.prevent_close();
-                        let _ = window.emit("desktop:close-requested", ());
+                        let _ =
+                            window.emit("desktop:close-requested", preferences::CLOSE_BEHAVIOR_ASK);
                     }
                 }
             }
@@ -273,9 +278,14 @@ fn setup_tray(app: &mut tauri::App) -> tauri::Result<()> {
                 app.state::<DesktopService>().clear_dns_cache();
             }
             TRAY_QUIT => {
-                let service = app.state::<DesktopService>();
-                service.set_allow_quit();
-                app.exit(0);
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ =
+                        window.emit("desktop:close-requested", preferences::CLOSE_BEHAVIOR_QUIT);
+                } else {
+                    let service = app.state::<DesktopService>();
+                    service.set_allow_quit();
+                    app.exit(0);
+                }
             }
             _ => {}
         })

@@ -7,6 +7,7 @@ import { proxyProtocolOptions, upstreamProtocolOptions } from "../features/confi
 import type { ConfigPageProps } from "../features/config/doc";
 import { defaultPortForProtocol, defaultPortForProxy } from "../features/config/transforms";
 import type { ConfigValidation } from "../features/config/validation";
+import { CommitOnBlurInput } from "../shared/CommitOnBlurInput";
 import type { ProxyConfig, UpstreamConfig } from "../shared/types";
 
 type UpstreamEndpointPatch = Pick<UpstreamConfig, "protocol" | "host" | "port" | "path">;
@@ -336,7 +337,14 @@ export function UpstreamsPage({ doc, onChange, validation, running, checkingUpst
           <span className="resolverOptionsTitle">{t("upstreams.resolverOptions")}</span>
           <div className="resolverOptionField resolverOptionFieldNarrow">
             <span>{t("upstreams.timeout")}</span>
-            <Input size="small" value={cfg.resolver.timeout} onChange={(event) => updateResolver({ timeout: event.target.value })} placeholder="5s" />
+            <CommitOnBlurInput
+              size="small"
+              status={validation.timeout ? "error" : undefined}
+              title={validation.timeout}
+              value={cfg.resolver.timeout}
+              onCommit={(value) => updateResolver({ timeout: value })}
+              placeholder="5s"
+            />
           </div>
           <div className="resolverOptionField resolverOptionFieldWide">
             <span>{t("upstreams.bootstrapDns")}</span>
@@ -357,6 +365,8 @@ export function UpstreamsPage({ doc, onChange, validation, running, checkingUpst
               size="small"
               value={cfg.resolver.defaultProxy}
               onChange={(value) => updateResolver({ defaultProxy: value })}
+              status={validation.defaultProxy ? "error" : undefined}
+              title={validation.defaultProxy}
               options={[{ value: "", label: t("upstreams.none") }, ...cfg.resolver.proxies.map((proxy) => ({ value: proxy.name, label: proxy.name }))]}
             />
           </div>
