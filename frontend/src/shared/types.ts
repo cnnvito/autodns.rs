@@ -86,6 +86,7 @@ export type DnsHistoryEntry = {
   attemptCount: number;
   responseCode: string;
   minTtl?: number;
+  answers?: string;
   error: string;
   errorMessage?: LocalizedMessage;
 };

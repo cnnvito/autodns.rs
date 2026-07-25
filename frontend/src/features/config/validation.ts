@@ -213,10 +213,10 @@ function validateCache(config: DesktopConfig, result: ConfigValidation, t: Trans
 }
 
 function validateHealthcheck(config: DesktopConfig, result: ConfigValidation, t: Translate) {
-  if (!isDuration(config.healthcheck.interval)) {
+  if (!isPositiveDuration(config.healthcheck.interval)) {
     result.healthcheck.interval = t("validation.health.interval");
   }
-  if (!isDuration(config.healthcheck.timeout)) {
+  if (!isPositiveDuration(config.healthcheck.timeout)) {
     result.healthcheck.timeout = t("validation.health.timeout");
   }
   if (config.healthcheck.domain.trim() && config.healthcheck.domain.trim() !== "." && !isDomain(config.healthcheck.domain)) {
@@ -290,11 +290,9 @@ function parseHostPort(value: string): { host: string; port: string } | null {
   return { host: value.slice(0, index), port: value.slice(index + 1) };
 }
 
-function isDuration(value: string): boolean {
-  const trimmed = value.trim();
-  return Boolean(trimmed && /^(?:\d+(?:\.\d+)?(?:ms|s|m|h))+$/.test(trimmed));
-}
-
+// Syntax-level twin of the authoritative duration rules in
+// src-tauri/src/config.rs (CoreConfig::validate): what this accepts must stay
+// a subset of what the backend accepts, or auto save will hit backend errors.
 function isPositiveDuration(value: string): boolean {
   const trimmed = value.trim();
   const parts = trimmed.match(/\d+(?:\.\d+)?(?:ms|s|m|h)/g);

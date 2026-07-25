@@ -1,4 +1,4 @@
-import { Alert, Badge, Button, Descriptions, Empty, List, Space, Tag, Typography } from "antd";
+import { Alert, App as AntdApp, Badge, Button, Descriptions, Empty, List, Space, Tag, Typography } from "antd";
 import { ReloadOutlined } from "@ant-design/icons";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -33,6 +33,7 @@ export function OverviewPage({
   language: ResolvedLanguage;
 }) {
   const { t } = useTranslation();
+  const { modal } = AntdApp.useApp();
   const running = status?.running ?? false;
   const upstreams = status?.upstreamHealth ?? [];
   const healthyUpstreams = upstreams.filter((item) => item.health === "healthy").length;
@@ -54,7 +55,7 @@ export function OverviewPage({
     try {
       setOverview(await dnsHistoryOverview());
     } catch (err) {
-      setError(errorMessage(err, (key, values) => t(key, values)));
+      setError(errorMessage(err, t));
     } finally {
       setLoading(false);
     }
@@ -82,26 +83,7 @@ export function OverviewPage({
 
   const updatedAt = useMemo(() => formatDate(overview?.generatedAt, language), [overview?.generatedAt, language]);
   const cacheRate = overview?.total ? `${Math.round((overview.cacheHits / overview.total) * 100)}%` : "-";
-  const recentQueries = useMemo(() => {
-    const rows: DnsHistoryEntry[] = [];
-    overview?.topDomains.slice(0, 4).forEach((item, index) => {
-      rows.push({
-        id: index,
-        startedAt: item.lastSeenAt,
-        domain: item.domain,
-        recordType: "-",
-        source: "summary",
-        routeId: 0,
-        upstreamName: "",
-        upstreamProtocol: "",
-        durationMs: Math.round(item.averageDurationMs),
-        attemptCount: 0,
-        responseCode: "",
-        error: ""
-      });
-    });
-    return rows;
-  }, [overview?.topDomains]);
+  const topActivity = overview?.topDomains.slice(0, 4) ?? [];
   const initialOverviewLoading = loading && !overview;
 
   return (
@@ -110,7 +92,7 @@ export function OverviewPage({
         <div>
           <Typography.Title level={2}>{t("overview.serviceStatus")}</Typography.Title>
         </div>
-        <Button icon={<ReloadOutlined />} onClick={refreshOverview} disabled={loading}>
+        <Button icon={<ReloadOutlined />} onClick={refreshOverview} loading={loading}>
           {loading ? t("overview.refreshing") : t("overview.refresh")}
         </Button>
       </header>
@@ -156,10 +138,33 @@ export function OverviewPage({
               ]}
             />
             <Space className="homePaneActions">
-              <Button onClick={onRestoreSystemDns} disabled={systemDnsLoading || !managedAdapters}>
+              <Button
+                onClick={() =>
+                  modal.confirm({
+                    title: t("systemDnsPage.restoreTitle"),
+                    content: t("systemDnsPage.restoreInfo"),
+                    okText: t("systemDnsPage.confirm"),
+                    cancelText: t("actions.cancel"),
+                    onOk: onRestoreSystemDns
+                  })
+                }
+                disabled={systemDnsLoading || !managedAdapters}
+              >
                 {t("overview.restore")}
               </Button>
-              <Button type="primary" onClick={onApplySystemDns} disabled={systemDnsLoading || !running || !systemDnsEnabled || !selectedAdapters}>
+              <Button
+                type="primary"
+                onClick={() =>
+                  modal.confirm({
+                    title: t("systemDnsPage.applyTitle"),
+                    content: t("systemDnsPage.applyWarning"),
+                    okText: t("systemDnsPage.confirm"),
+                    cancelText: t("actions.cancel"),
+                    onOk: onApplySystemDns
+                  })
+                }
+                disabled={systemDnsLoading || !running || !systemDnsEnabled || !selectedAdapters}
+              >
                 {t("overview.applyTakeover")}
               </Button>
             </Space>
@@ -179,13 +184,13 @@ export function OverviewPage({
               <Tag color={overview?.failures ? "error" : "success"}>{t("overview.failures", { count: formatCount(overview?.failures) })}</Tag>
             </Space>
             <List
-              dataSource={recentQueries}
+              dataSource={topActivity}
               locale={{ emptyText: overview ? t("overview.noRecentRecords") : t("overview.noOverview") }}
               renderItem={(item) => (
-                <List.Item extra={<Typography.Text>{item.durationMs ? `${item.durationMs} ms` : "-"}</Typography.Text>}>
+                <List.Item extra={<Typography.Text>{Math.round(item.averageDurationMs) ? `${Math.round(item.averageDurationMs)} ms` : "-"}</Typography.Text>}>
                   <List.Item.Meta
                     title={item.domain}
-                    description={`${formatDate(item.startedAt, language) || "-"} · ${item.source === "summary" ? t("overview.frequentDomain") : item.recordType}`}
+                    description={`${formatDate(item.lastSeenAt, language) || "-"} · ${t("overview.frequentDomain")}`}
                   />
                 </List.Item>
               )}

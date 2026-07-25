@@ -194,19 +194,26 @@ export const zhCN = {
     certificateFilePrefix: "文件名前缀",
     caCertFile: "CA 证书",
     logLevel: "日志级别",
-    cacheEnabled: "缓存开关",
+    cacheEnabled: "启用缓存",
     clearNow: "立即清理",
     maxEntries: "最大条目",
-    maxEntrySize: "单条字节",
+    maxEntriesDescription: "超出后自动淘汰旧条目。",
+    maxEntrySize: "单条上限（字节）",
+    maxEntrySizeDescription: "超过该大小的响应不会写入缓存。",
     minTtl: "最小 TTL",
+    minTtlDescription: "缓存时长下限（秒），上游返回更短的 TTL 时按该值缓存。",
     maxTtl: "最大 TTL",
-    negativeTtl: "失败 TTL",
+    maxTtlDescription: "缓存时长上限（秒），上游返回更长的 TTL 时按该值缓存。",
+    negativeTtl: "负缓存 TTL",
+    negativeTtlDescription: "缓存“域名不存在、无记录”等负向结果的秒数，0 表示按常规 TTL 规则。",
     healthcheckEnabled: "健康检查",
     healthInterval: "检查间隔",
     healthTimeout: "检查超时",
     healthDomain: "探测域名",
     failureThreshold: "失败阈值",
+    failureThresholdDescription: "任意一次失败即会将上游暂时移出查询轮换、转入恢复探测；连续失败达到该次数后才会在界面上标记为不健康。",
     recoveryThreshold: "恢复阈值",
+    recoveryThresholdDescription: "连续成功该次数后，上游会重新加入查询轮换。",
     defaultPlaceholder: "默认"
   },
   options: {
@@ -262,8 +269,8 @@ export const zhCN = {
       maxTtl: "最大 TTL 不能小于最小 TTL。"
     },
     health: {
-      interval: "检查间隔格式无效，例如 30s。",
-      timeout: "检查超时格式无效，例如 2s。",
+      interval: "检查间隔必须大于 0，例如 30s。",
+      timeout: "检查超时必须大于 0，例如 2s。",
       domain: "探测域名无效。"
     }
   },
@@ -330,8 +337,8 @@ export const zhCN = {
     total: "共 {{count}} 条",
     loading: "正在加载解析历史。",
     emptyFiltered: "没有符合筛选条件的解析历史。",
-    topDomains: "Top 域名",
-    noTopDomains: "暂无 Top 域名",
+    topDomains: "常访问域名",
+    noTopDomains: "暂无常访问域名",
     recentAverage: "最近 {{time}} · 平均 {{duration}} ms",
     columns: {
       time: "时间",
@@ -346,7 +353,8 @@ export const zhCN = {
       attempts: "尝试",
       route: "路由",
       defaultRoute: "默认",
-      error: "错误"
+      error: "错误",
+      answers: "解析记录"
     },
     source: {
       upstream: "上游",
@@ -490,8 +498,12 @@ export const zhCN = {
     title: "上游与代理",
     resolverOptions: "解析选项",
     timeout: "超时",
+    timeoutHint: "单次上游查询的超时时间，例如 5s、500ms。",
     bootstrapDns: "Bootstrap DNS",
+    bootstrapDnsHint: "用于解析 DoH/DoT 上游域名的普通 DNS 服务器，避免鸡生蛋问题。",
     defaultProxy: "默认代理",
+    defaultProxyHint: "未单独指定代理的上游默认使用的代理。",
+    ipv6Hint: "关闭后会过滤响应中的 AAAA（IPv6）记录，仅返回 IPv4 结果。",
     direct: "直连",
     none: "无",
     upstreamDns: "上游 DNS",

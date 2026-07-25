@@ -1,4 +1,4 @@
-import { Button, Card, Empty, Input, List, Modal, Segmented, Select, Space, Table, Tag, Typography } from "antd";
+import { Button, Empty, Input, List, Modal, Segmented, Select, Space, Table, Tag, Tooltip, Typography } from "antd";
 import { DeleteOutlined, ImportOutlined, PlusOutlined } from "@ant-design/icons";
 import type { SelectProps } from "antd";
 import type { MouseEvent, ReactNode } from "react";
@@ -9,6 +9,8 @@ import { getMatchOptions } from "../features/config/options";
 import { defaultRoute, formatHost, formatRoute, parseHost, parseRoute } from "../features/config/transforms";
 import type { ConfigPageProps } from "../features/config/doc";
 import type { ConfigValidation } from "../features/config/validation";
+import { LoadingPanel } from "../shared/LoadingPanel";
+import { ValidatedField } from "../shared/ValidatedField";
 
 type ImportKind = "hosts" | "routes";
 
@@ -34,7 +36,7 @@ export function RulesPage({ doc, onChange, validation }: RulesPageProps) {
   const [activeRuleKind, setActiveRuleKind] = useState<ImportKind>("hosts");
 
   if (!doc) {
-    return <LoadingPanel />;
+    return <LoadingPanel title={t("rules.loadingTitle")} text={t("rules.loading")} />;
   }
 
   const currentDoc = doc;
@@ -70,6 +72,13 @@ export function RulesPage({ doc, onChange, validation }: RulesPageProps) {
   const importableItems = importPreview.filter((item) => item.valid);
   const hostRows = cfg.resolver.hosts.map((raw, index) => ({ key: `host-${index}`, index, row: parseHost(raw) }));
   const routeRows = cfg.resolver.routes.map((raw, index) => ({ key: `route-${index}`, index, row: parseRoute(raw) }));
+  // Rows the user has not started filling stay visually quiet: suppressing error display for
+  // an all-empty row avoids a wall of red right after "add". Validation itself is untouched,
+  // so auto-save stays blocked until the row is completed or removed.
+  const hostRowErrors = (record: (typeof hostRows)[number]) =>
+    record.row.domain.trim() || record.row.ips.trim() ? validation.hosts[record.index] : undefined;
+  const routeRowErrors = (record: (typeof routeRows)[number]) =>
+    record.row.domain.trim() ? validation.routes[record.index] : undefined;
   const upstreamNames = new Set(cfg.resolver.upstreams.map((item) => item.name));
   const routeUpstreamOptions = cfg.resolver.upstreams.map((item) => ({ value: item.name, label: item.name }));
   const matchOptions = getMatchOptions(t);
@@ -139,14 +148,11 @@ export function RulesPage({ doc, onChange, validation }: RulesPageProps) {
         <main className="workbenchMain">
           {activeRuleKind === "hosts" ? (
             <div className="workbenchPanel">
-              <div className="workbenchPanelHeader">
-                <span className="workbenchPanelTitle">Hosts</span>
-              </div>
               <div className="workbenchPanelBodyFlush">
                 <Table
                   rowKey="key"
                   size="small"
-                  pagination={false}
+                  pagination={{ pageSize: 100, hideOnSinglePage: true, showSizeChanger: false }}
                   scroll={{ x: "max-content" }}
                   dataSource={hostRows}
                   locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t("rules.noHosts")} /> }}
@@ -155,19 +161,19 @@ export function RulesPage({ doc, onChange, validation }: RulesPageProps) {
                       title: t("rules.domain"),
                       dataIndex: ["row", "domain"],
                       render: (_value, record) => (
-                        <FieldWithError error={validation.hosts[record.index]?.domain}>
-                          <Input status={validation.hosts[record.index]?.domain ? "error" : undefined} value={record.row.domain} onChange={(event) => updateHost(record.index, { ...record.row, domain: event.target.value })} placeholder="example.local" />
-                        </FieldWithError>
+                        <ValidatedField error={hostRowErrors(record)?.domain}>
+                          <Input status={hostRowErrors(record)?.domain ? "error" : undefined} value={record.row.domain} onChange={(event) => updateHost(record.index, { ...record.row, domain: event.target.value })} placeholder="example.local" />
+                        </ValidatedField>
                       )
                     },
                     {
                       title: t("rules.ipAddress"),
                       dataIndex: ["row", "ips"],
                       render: (_value, record) => (
-                        <FieldWithError error={validation.hosts[record.index]?.ips}>
+                        <ValidatedField error={hostRowErrors(record)?.ips}>
                           <Select
                             className="workbenchInlineSelect workbenchTagsSelect"
-                            status={validation.hosts[record.index]?.ips ? "error" : undefined}
+                            status={hostRowErrors(record)?.ips ? "error" : undefined}
                             mode="tags"
                             value={splitList(record.row.ips)}
                             onChange={(values) => updateHost(record.index, { ...record.row, ips: values.join(", ") })}
@@ -175,7 +181,7 @@ export function RulesPage({ doc, onChange, validation }: RulesPageProps) {
                             open={false}
                             suffixIcon={null}
                           />
-                        </FieldWithError>
+                        </ValidatedField>
                       )
                     },
                     {
@@ -183,7 +189,7 @@ export function RulesPage({ doc, onChange, validation }: RulesPageProps) {
                       width: 48,
                       align: "right",
                       render: (_value, record) => (
-                        <Button icon={<DeleteOutlined />} onClick={() => removeHost(record.index)} aria-label={t("rules.deleteHost")} />
+                        <Button danger icon={<DeleteOutlined />} onClick={() => removeHost(record.index)} aria-label={t("rules.deleteHost")} />
                       )
                     }
                   ]}
@@ -192,14 +198,11 @@ export function RulesPage({ doc, onChange, validation }: RulesPageProps) {
             </div>
           ) : (
             <div className="workbenchPanel">
-              <div className="workbenchPanelHeader">
-                <span className="workbenchPanelTitle">{t("rules.routeRules")}</span>
-              </div>
               <div className="workbenchPanelBodyFlush">
                 <Table
                   rowKey="key"
                   size="small"
-                  pagination={false}
+                  pagination={{ pageSize: 100, hideOnSinglePage: true, showSizeChanger: false }}
                   scroll={{ x: "max-content" }}
                   dataSource={routeRows}
                   locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t("rules.noRoutes")} /> }}
@@ -215,18 +218,18 @@ export function RulesPage({ doc, onChange, validation }: RulesPageProps) {
                       title: t("rules.domain"),
                       width: 220,
                       render: (_value, record) => (
-                        <FieldWithError error={validation.routes[record.index]?.domain}>
-                          <Input status={validation.routes[record.index]?.domain ? "error" : undefined} value={record.row.domain} onChange={(event) => updateRoute(record.index, { ...record.row, domain: event.target.value })} placeholder="example.com" />
-                        </FieldWithError>
+                        <ValidatedField error={routeRowErrors(record)?.domain}>
+                          <Input status={routeRowErrors(record)?.domain ? "error" : undefined} value={record.row.domain} onChange={(event) => updateRoute(record.index, { ...record.row, domain: event.target.value })} placeholder="example.com" />
+                        </ValidatedField>
                       )
                     },
                     {
                       title: t("rules.targetUpstream"),
                       render: (_value, record) => (
-                        <FieldWithError error={validation.routes[record.index]?.upstreams}>
+                        <ValidatedField error={routeRowErrors(record)?.upstreams}>
                           <Select
                             className="workbenchInlineSelect workbenchTagsSelect"
-                            status={validation.routes[record.index]?.upstreams ? "error" : undefined}
+                            status={routeRowErrors(record)?.upstreams ? "error" : undefined}
                             mode="multiple"
                             value={record.row.upstreams}
                             onChange={(values) => updateRoute(record.index, { ...record.row, upstreams: values })}
@@ -234,21 +237,20 @@ export function RulesPage({ doc, onChange, validation }: RulesPageProps) {
                             tagRender={routeUpstreamTagRender}
                             placeholder={t("rules.selectUpstream")}
                           />
-                        </FieldWithError>
+                        </ValidatedField>
                       )
                     },
                     {
                       title: t("rules.status"),
-                      width: 180,
+                      width: 90,
                       render: (_value, record) => {
                         const status = cfg.resolver.routeStatuses?.[record.index];
                         const missing = record.row.upstreams.filter((name) => !cfg.resolver.upstreams.some((item) => item.name === name));
                         const invalidReason = status?.invalidReason || (!record.row.upstreams.length ? t("rules.noUpstreamSelected") : missing.length ? t("rules.upstreamDeleted", { names: missing.join(", ") }) : "");
                         return (
-                          <Space orientation="vertical" size={4}>
+                          <Tooltip title={invalidReason || undefined}>
                             <Tag color={invalidReason ? "error" : "success"}>{invalidReason ? t("rules.invalid") : t("rules.valid")}</Tag>
-                            {invalidReason ? <Typography.Text type="danger">{invalidReason}</Typography.Text> : null}
-                          </Space>
+                          </Tooltip>
                         );
                       }
                     },
@@ -257,7 +259,7 @@ export function RulesPage({ doc, onChange, validation }: RulesPageProps) {
                       width: 48,
                       align: "right",
                       render: (_value, record) => (
-                        <Button icon={<DeleteOutlined />} onClick={() => removeRoute(record.index)} aria-label={t("rules.deleteRoute")} />
+                        <Button danger icon={<DeleteOutlined />} onClick={() => removeRoute(record.index)} aria-label={t("rules.deleteRoute")} />
                       )
                     }
                   ]}
@@ -439,20 +441,4 @@ function SelectTag({ color, label, closable, onClose }: { color?: string; label:
   );
 }
 
-function LoadingPanel() {
-  const { t } = useTranslation();
-  return (
-    <Card title={t("rules.loadingTitle")}>
-      <Typography.Text type="secondary">{t("rules.loading")}</Typography.Text>
-    </Card>
-  );
-}
 
-function FieldWithError({ error, children }: { error?: string; children: ReactNode }) {
-  return (
-    <Space direction="vertical" size={4} className="pageFill">
-      {children}
-      {error ? <Typography.Text type="danger">{error}</Typography.Text> : null}
-    </Space>
-  );
-}

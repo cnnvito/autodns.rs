@@ -28,7 +28,6 @@ import {
   loadPreferences,
   loadStatus,
   loadSystemDnsStatus,
-  normalizeStatus,
   quitApp,
   restoreSystemDns,
   saveConfig,
@@ -43,13 +42,14 @@ import { emptyConfigValidation, flattenValidationMessages, hasValidationErrors, 
 import {
   hasAutoSaveChanges,
   hasManualConfigChanges,
-  mergeAutoSaveBaseline,
   mergeAutoSaveDocument
 } from "../features/config/autosave";
+import { useAutoSave, type AutoSaveState } from "../features/config/useAutoSave";
 import { errorMessage, formatDate, localizedMessageText } from "../shared/format";
 import type { ConfigDocument, DesktopPreferences, DesktopStatus, HealthState, SystemDnsSettings, SystemDnsStatus } from "../shared/types";
 import type { SettingsSection } from "../pages/SettingsPage";
 import { LoadingOverlay } from "../shared/LoadingOverlay";
+import { useSerialSaver } from "../shared/useSerialSaver";
 import {
   antdLocaleFor,
   getSystemLanguage,
@@ -69,7 +69,6 @@ type NavigationItem = {
 };
 
 type NotificationKind = "success" | "error" | "warning" | "info";
-type AutoSaveState = "idle" | "waiting" | "saving" | "saved" | "blocked" | "error";
 
 const notificationConfig = {
   placement: "bottomRight" as const,
@@ -79,7 +78,14 @@ const notificationConfig = {
   pauseOnHover: true
 };
 
-const AUTO_SAVE_DEBOUNCE_MS = 700;
+const autoSaveStatusKeys: Record<AutoSaveState, string> = {
+  idle: "config.saved",
+  waiting: "config.autoSaveWaiting",
+  saving: "config.autoSaving",
+  saved: "config.autoSaved",
+  blocked: "config.autoSaveBlocked",
+  error: "config.autoSaveFailed"
+};
 
 const defaultPreferences: DesktopPreferences = {
   closeBehavior: "ask",
@@ -137,12 +143,6 @@ function needsRuntimeRestart(current: ConfigDocument | null, saved: ConfigDocume
     || (currentServer.mode === "doh" && currentServer.path !== savedServer.path);
 }
 
-function enqueueSerial<T>(queue: { current: Promise<unknown> }, task: () => Promise<T>): Promise<T> {
-  const next = queue.current.catch(() => undefined).then(task);
-  queue.current = next.catch(() => undefined);
-  return next;
-}
-
 function getSystemDarkPreference(): boolean {
   return window.matchMedia?.("(prefers-color-scheme: dark)").matches ?? false;
 }
@@ -159,46 +159,26 @@ export function App() {
   const [systemDark, setSystemDark] = useState(() => getSystemDarkPreference());
   const [language, setLanguage] = useState<LanguagePreference>(() => loadLanguagePreference());
   const [systemLanguage, setSystemLanguage] = useState<ResolvedLanguage>(() => getSystemLanguage());
-  const [preferences, setPreferences] = useState<DesktopPreferences>(defaultPreferences);
-  const [systemDns, setSystemDns] = useState<SystemDnsStatus | null>(null);
   const [systemDnsLoading, setSystemDnsLoading] = useState(false);
   const [activeTab, setActiveTab] = useState("overview");
   const [settingsSection, setSettingsSection] = useState<SettingsSection>("general");
   const [closePromptOpen, setClosePromptOpen] = useState(false);
   const [appVersion, setAppVersion] = useState("");
   const [checkingUpstreams, setCheckingUpstreams] = useState<Set<string>>(() => new Set());
-  const [autoSaveState, setAutoSaveState] = useState<AutoSaveState>("idle");
   const [quitting, setQuitting] = useState(false);
   const lastRuntimeError = useRef("");
   const lastUpstreamHealth = useRef<Map<string, HealthState> | null>(null);
   const systemNotificationPermission = useRef<boolean | null>(null);
   const configDocRef = useRef<ConfigDocument | null>(null);
   const savedConfigDocRef = useRef<ConfigDocument | null>(null);
-  const configSaveQueueRef = useRef<Promise<unknown>>(Promise.resolve());
-  const autoSaveTimerRef = useRef<number | undefined>(undefined);
-  const autoSaveRevisionRef = useRef(0);
-  const autoSaveTaskRef = useRef<Promise<boolean> | null>(null);
-  const configSaveFlushRef = useRef(false);
-  const configRequestIdRef = useRef(0);
   const mutationLockRef = useRef(false);
   const quitHandlerRef = useRef<() => void>(() => undefined);
-  const preferencesRef = useRef<DesktopPreferences>(defaultPreferences);
-  const persistedPreferencesRef = useRef<DesktopPreferences>(defaultPreferences);
-  const preferencesSaveQueueRef = useRef<Promise<unknown>>(Promise.resolve());
-  const preferencesSaveRevisionRef = useRef(0);
-  const systemDnsRef = useRef<SystemDnsStatus | null>(null);
-  const persistedSystemDnsRef = useRef<SystemDnsStatus | null>(null);
-  const systemDnsSaveQueueRef = useRef<Promise<unknown>>(Promise.resolve());
-  const systemDnsSaveRevisionRef = useRef(0);
-  const systemDnsSaveFailedRef = useRef(false);
-  const pendingSystemDnsSave = useRef(0);
   const systemDnsLoadingRef = useRef(false);
   const systemDnsAdaptersRequested = useRef(false);
   const [notificationApi, notificationContextHolder] = notification.useNotification(notificationConfig);
   const notificationApiRef = useRef(notificationApi);
   notificationApiRef.current = notificationApi;
   configDocRef.current = configDoc;
-  systemDnsRef.current = systemDns;
   quitHandlerRef.current = () => {
     void handleQuitApp();
   };
@@ -235,13 +215,13 @@ export function App() {
   const notify = useCallback((kind: NotificationKind, title: string, description?: string) => {
     notificationApiRef.current.open({
       type: kind,
-      message: title,
+      title,
       description,
       duration: kind === "error" ? 0 : 4
     });
   }, []);
 
-  const translateError = useCallback((err: unknown) => errorMessage(err, (key, values) => t(key, values)), [t]);
+  const translateError = useCallback((err: unknown) => errorMessage(err, t), [t]);
 
   const notifyError = useCallback((title: string, err: unknown) => {
     notify("error", title, translateError(err));
@@ -250,6 +230,18 @@ export function App() {
   const translateRef = useRef(t);
   notifyErrorRef.current = notifyError;
   translateRef.current = t;
+
+  const preferencesSaver = useSerialSaver<DesktopPreferences, DesktopPreferences>({
+    save: savePreferences,
+    onError: (err) => notifyError(t("notifications.desktopBehaviorSaveFailed"), err)
+  });
+  const preferences = preferencesSaver.value ?? defaultPreferences;
+
+  const systemDnsSaver = useSerialSaver<SystemDnsStatus, SystemDnsSettings>({
+    save: saveSystemDnsSettings,
+    onError: (err) => notifyError(t("notifications.systemDnsSaveFailed"), err)
+  });
+  const systemDns = systemDnsSaver.value;
 
   const notifySystem = useCallback(async (title: string, body: string) => {
     try {
@@ -277,11 +269,8 @@ export function App() {
     setSystemDnsLoading(true);
     try {
       const nextSystemDns = await loadSystemDnsStatus(force);
-      if (pendingSystemDnsSave.current === 0) {
-        systemDnsSaveFailedRef.current = false;
-        setSystemDns(nextSystemDns);
-        systemDnsRef.current = nextSystemDns;
-        persistedSystemDnsRef.current = nextSystemDns;
+      if (!systemDnsSaver.hasPending()) {
+        systemDnsSaver.sync(nextSystemDns);
       }
     } finally {
       systemDnsLoadingRef.current = false;
@@ -306,20 +295,16 @@ export function App() {
     setSavedConfigDoc(doc);
     configDocRef.current = doc;
     savedConfigDocRef.current = doc;
-    setPreferences(prefs);
-    preferencesRef.current = prefs;
-    persistedPreferencesRef.current = prefs;
+    preferencesSaver.sync(prefs);
     setLanguage(normalizeLanguage(prefs.language));
     setStatus(nextStatus);
-    setSystemDns(nextSystemDns);
-    systemDnsRef.current = nextSystemDns;
-    persistedSystemDnsRef.current = nextSystemDns;
+    systemDnsSaver.sync(nextSystemDns);
   }
 
   useEffect(() => {
     let unlistenStatus: (() => void) | undefined;
     listen<DesktopStatus>("desktop:status", (event) => {
-      setStatus(normalizeStatus(event.payload));
+      setStatus(event.payload);
     }).then((nextUnlisten) => {
       unlistenStatus = nextUnlisten;
     }).catch(() => undefined);
@@ -376,7 +361,7 @@ export function App() {
 
   useEffect(() => {
     const runtimeError = status?.lastErrorMessage
-      ? localizedMessageText(status.lastErrorMessage, (key, values) => t(key, values))
+      ? localizedMessageText(status.lastErrorMessage, t)
       : status?.lastError || "";
     if (runtimeError && runtimeError !== lastRuntimeError.current) {
       notify("error", t("notifications.runtimeError"), runtimeError);
@@ -397,7 +382,7 @@ export function App() {
         const previous = previousHealth.get(item.name);
         if (previous === "healthy" && item.health === "unhealthy") {
           const error = item.lastErrorMessage
-            ? localizedMessageText(item.lastErrorMessage, (key, values) => t(key, values))
+            ? localizedMessageText(item.lastErrorMessage, t)
             : item.lastError || "";
           void notifySystem(
             t("notifications.upstreamUnhealthy"),
@@ -431,10 +416,10 @@ export function App() {
   }, []);
 
   const running = status?.running ?? false;
-  const validation = useMemo(() => configDoc ? validateDesktopConfig(configDoc.config, (key, values) => t(key, values)) : emptyConfigValidation(), [configDoc, t]);
+  const validation = useMemo(() => configDoc ? validateDesktopConfig(configDoc.config, t) : emptyConfigValidation(), [configDoc, t]);
   const validationMessages = useMemo(() => flattenValidationMessages(validation), [validation]);
   const validationErrorCount = validationMessages.length;
-  const lastStarted = useMemo(() => formatDate(status?.startedAt, resolvedLanguage), [status?.startedAt, resolvedLanguage]);
+  const lastStarted = formatDate(status?.startedAt, resolvedLanguage);
   const restartRequired = useMemo(() => needsRuntimeRestart(configDoc, savedConfigDoc), [configDoc, savedConfigDoc]);
   const autoDirty = useMemo(() => hasAutoSaveChanges(configDoc, savedConfigDoc), [configDoc, savedConfigDoc]);
   const manualDirty = useMemo(() => hasManualConfigChanges(configDoc, savedConfigDoc), [configDoc, savedConfigDoc]);
@@ -444,14 +429,33 @@ export function App() {
   );
   const autoSaveValidation = useMemo(
     () => autoSaveDocument
-      ? validateDesktopConfig(autoSaveDocument.config, (key, values) => t(key, values))
+      ? validateDesktopConfig(autoSaveDocument.config, t)
       : emptyConfigValidation(),
     [autoSaveDocument, t]
   );
   const autoSaveEligible = autoDirty && Boolean(autoSaveDocument) && !hasValidationErrors(autoSaveValidation) && !busy && !quitting;
+
+  const autoSave = useAutoSave({
+    configDocRef,
+    savedConfigDocRef,
+    commitSavedConfig,
+    onStatus: setStatus,
+    onSaveError: (err) => notifyError(t("notifications.saveFailed"), err),
+    hasSnapshotErrors: (config) => hasValidationErrors(validateDesktopConfig(config, t)),
+    configDoc,
+    savedConfigDoc,
+    autoDirty,
+    eligible: autoSaveEligible,
+    blocked: hasValidationErrors(autoSaveValidation),
+    busy,
+    manualDirty,
+    quitting
+  });
+  const autoSaveState = autoSave.state;
+
   const effectiveDark = theme === "system" ? systemDark : theme === "dark";
-  const antdLocale = useMemo(() => antdLocaleFor(resolvedLanguage), [resolvedLanguage]);
-  const menuItems = useMemo(() => navigationItems.map((item) => ({
+  const antdLocale = antdLocaleFor(resolvedLanguage);
+  const menuItems = navigationItems.map((item) => ({
     key: item.key,
     label: (
       <span className="desktopNavLabel">
@@ -459,17 +463,17 @@ export function App() {
         <span>{t(item.labelKey)}</span>
       </span>
     )
-  })), [t]);
-  const languageOptions = useMemo(() => [
+  }));
+  const languageOptions = [
     { value: "system", label: t("settings.languageSystem") },
     { value: "zh-CN", label: t("settings.languageZhCN") },
     { value: "en-US", label: t("settings.languageEnUS") }
-  ], [t]);
-  const themeOptions = useMemo(() => [
+  ];
+  const themeOptions = [
     { value: "system", label: t("settings.themeSystem") },
     { value: "light", label: t("settings.themeLight") },
     { value: "dark", label: t("settings.themeDark") }
-  ], [t]);
+  ];
   const listenLine = running ? `${status?.listen || t("status.listenLocal")} · ${(status?.mode || "udp").toUpperCase()}` : t("status.serviceNotRunning");
   const healthyUpstreams = status?.upstreamHealth.filter((item) => item.health === "healthy").length ?? 0;
   const unhealthyUpstreams = status?.upstreamHealth.filter((item) => item.health === "unhealthy").length ?? 0;
@@ -481,26 +485,14 @@ export function App() {
         ? t("status.systemDnsUnmanaged")
         : t("status.systemDnsUnavailable");
   const runtimeStatusError = status?.lastErrorMessage
-    ? localizedMessageText(status.lastErrorMessage, (key, values) => t(key, values))
+    ? localizedMessageText(status.lastErrorMessage, t)
     : status?.lastError || "";
   const dirtyHint = running
     ? restartRequired
       ? t("config.dirtyHintRestart")
       : t("config.dirtyHintHotReload")
     : t("config.dirtyHintStopped");
-  const configStatusText = manualDirty
-    ? t("config.unsaved")
-    : autoSaveState === "waiting"
-      ? t("config.autoSaveWaiting")
-      : autoSaveState === "saving"
-        ? t("config.autoSaving")
-        : autoSaveState === "blocked"
-          ? t("config.autoSaveBlocked")
-          : autoSaveState === "error"
-            ? t("config.autoSaveFailed")
-            : autoSaveState === "saved"
-              ? t("config.autoSaved")
-              : t("config.saved");
+  const configStatusText = manualDirty ? t("config.unsaved") : t(autoSaveStatusKeys[autoSaveState]);
   const configStatusType = manualDirty || autoSaveState === "error" || autoSaveState === "blocked" ? "warning" : "secondary";
   const workspaceLoadingText = initializing ? t("busy.loadingConfig") : busy ? busyText || t("busy.processing") : "";
 
@@ -512,123 +504,6 @@ export function App() {
     savedConfigDocRef.current = doc;
     setSavedConfigDoc(doc);
   }
-
-  function cancelScheduledAutoSave() {
-    autoSaveRevisionRef.current += 1;
-    if (autoSaveTimerRef.current !== undefined) {
-      window.clearTimeout(autoSaveTimerRef.current);
-      autoSaveTimerRef.current = undefined;
-    }
-  }
-
-  function runAutoSaveNow(revision = autoSaveRevisionRef.current): Promise<boolean> {
-    const current = configDocRef.current;
-    const baseline = savedConfigDocRef.current;
-    if (!current || !baseline || revision !== autoSaveRevisionRef.current || !hasAutoSaveChanges(current, baseline)) {
-      return Promise.resolve(true);
-    }
-
-    const snapshot = mergeAutoSaveDocument(baseline, current);
-    const snapshotValidation = validateDesktopConfig(
-      snapshot.config,
-      (key, values) => translateRef.current(key, values)
-    );
-    if (hasValidationErrors(snapshotValidation)) {
-      setAutoSaveState("blocked");
-      return Promise.resolve(true);
-    }
-    const requestId = configRequestIdRef.current + 1;
-    configRequestIdRef.current = requestId;
-    setAutoSaveState("saving");
-
-    const task = enqueueSerial(configSaveQueueRef, async () => {
-      try {
-        const result = await saveConfig(snapshot);
-        const persistedBaseline = savedConfigDocRef.current;
-        commitSavedConfig(persistedBaseline ? mergeAutoSaveBaseline(persistedBaseline, snapshot) : snapshot);
-        if (requestId === configRequestIdRef.current && revision === autoSaveRevisionRef.current && !quitting) {
-          setStatus(result.status);
-          setAutoSaveState("saved");
-        }
-        return true;
-      } catch (err) {
-        if (
-          requestId === configRequestIdRef.current
-          && (revision === autoSaveRevisionRef.current || configSaveFlushRef.current)
-        ) {
-          setAutoSaveState("error");
-          notifyErrorRef.current(translateRef.current("notifications.saveFailed"), err);
-        }
-        return false;
-      }
-    });
-    autoSaveTaskRef.current = task;
-    void task.then(() => {
-      if (autoSaveTaskRef.current === task) {
-        autoSaveTaskRef.current = null;
-      }
-    });
-    return task;
-  }
-
-  async function flushPendingConfigSaves(): Promise<boolean> {
-    configSaveFlushRef.current = true;
-    try {
-      let success = true;
-      if (autoSaveTimerRef.current !== undefined) {
-        window.clearTimeout(autoSaveTimerRef.current);
-        autoSaveTimerRef.current = undefined;
-      }
-      if (autoSaveTaskRef.current) {
-        success = await autoSaveTaskRef.current;
-      }
-      const current = configDocRef.current;
-      const baseline = savedConfigDocRef.current;
-      if (current && baseline && hasAutoSaveChanges(current, baseline)) {
-        success = await runAutoSaveNow(autoSaveRevisionRef.current);
-      }
-      await configSaveQueueRef.current;
-      return success;
-    } finally {
-      configSaveFlushRef.current = false;
-    }
-  }
-
-  useEffect(() => {
-    cancelScheduledAutoSave();
-
-    if (!autoDirty) {
-      setAutoSaveState((current) => current === "saved" ? current : "idle");
-      return;
-    }
-
-    if (!autoSaveEligible) {
-      setAutoSaveState(hasValidationErrors(autoSaveValidation) ? "blocked" : "idle");
-      return;
-    }
-
-    const revision = autoSaveRevisionRef.current;
-    setAutoSaveState("waiting");
-    autoSaveTimerRef.current = window.setTimeout(() => {
-      autoSaveTimerRef.current = undefined;
-      if (!configDocRef.current || revision !== autoSaveRevisionRef.current) {
-        return;
-      }
-
-      void runAutoSaveNow(revision);
-    }, AUTO_SAVE_DEBOUNCE_MS);
-
-    return () => {
-      if (autoSaveTimerRef.current !== undefined) {
-        window.clearTimeout(autoSaveTimerRef.current);
-        autoSaveTimerRef.current = undefined;
-      }
-    };
-  }, [autoDirty, autoSaveEligible, autoSaveValidation, busy, configDoc, manualDirty, quitting, savedConfigDoc]);
-
-  useEffect(() => () => {
-    cancelScheduledAutoSave();
-  }, []);
 
   function beginBusy(text: string) {
     setBusyText(text);
@@ -647,7 +522,7 @@ export function App() {
     mutationLockRef.current = true;
     beginBusy(t("busy.startingService"));
     try {
-      await flushPendingConfigSaves();
+      await autoSave.flushPendingSaves();
       const nextStatus = await startAutodns("");
       setStatus(nextStatus);
       notify("success", t("notifications.serviceStarted"), nextStatus.listen || t("notifications.serviceStartedDescription"));
@@ -687,19 +562,18 @@ export function App() {
       return;
     }
     const snapshot = configDoc;
-    cancelScheduledAutoSave();
-    const requestId = configRequestIdRef.current + 1;
-    configRequestIdRef.current = requestId;
+    autoSave.cancelScheduled();
+    const requestId = autoSave.beginRequest();
     mutationLockRef.current = true;
     beginBusy(restartRequired ? t("busy.savingConfigAndRestarting") : t("busy.savingConfig"));
     try {
-      const result = await enqueueSerial(configSaveQueueRef, () => saveConfig(snapshot));
-      if (requestId !== configRequestIdRef.current) {
+      const result = await autoSave.enqueueSave(() => saveConfig(snapshot));
+      if (!autoSave.isCurrentRequest(requestId)) {
         return;
       }
       commitSavedConfig(snapshot);
       setStatus(result.status);
-      setAutoSaveState("idle");
+      autoSave.markIdle();
       if (result.action === "restarted") {
         notify("success", t("notifications.configSavedRestarted"), t("notifications.configSavedRestartedDescription"));
       } else if (result.action === "hotReloaded") {
@@ -722,7 +596,7 @@ export function App() {
     mutationLockRef.current = true;
     beginBusy(t("busy.stoppingService"));
     try {
-      await flushPendingConfigSaves();
+      await autoSave.flushPendingSaves();
       const nextStatus = await stopAutodns();
       setStatus(nextStatus);
       notify("info", t("notifications.serviceStopped"));
@@ -741,7 +615,7 @@ export function App() {
     mutationLockRef.current = true;
     beginBusy(t("busy.restartingService"));
     try {
-      await flushPendingConfigSaves();
+      await autoSave.flushPendingSaves();
       await stopAutodns();
       const nextStatus = await startAutodns("");
       setStatus(nextStatus);
@@ -764,71 +638,22 @@ export function App() {
     }
     const current = configDocRef.current;
     const next = current ? mergeAutoSaveDocument(persisted, current) : persisted;
-    cancelScheduledAutoSave();
+    autoSave.cancelScheduled();
     setConfigDoc(next);
     configDocRef.current = next;
-    setAutoSaveState("idle");
+    autoSave.markIdle();
     notify("info", t("notifications.configDiscarded"), t("notifications.configDiscardedDescription"));
   }
 
   function handlePreferencesChange(patch: Partial<DesktopPreferences>): Promise<void> {
-    const next = { ...preferencesRef.current, ...patch };
-    const revision = preferencesSaveRevisionRef.current + 1;
-    preferencesSaveRevisionRef.current = revision;
-    preferencesRef.current = next;
-    setPreferences(next);
-
-    return enqueueSerial(preferencesSaveQueueRef, async () => {
-      try {
-        const saved = await savePreferences(next);
-        persistedPreferencesRef.current = saved;
-        if (revision === preferencesSaveRevisionRef.current) {
-          preferencesRef.current = saved;
-          setPreferences(saved);
-        }
-      } catch (err) {
-        if (revision === preferencesSaveRevisionRef.current) {
-          const persisted = persistedPreferencesRef.current;
-          preferencesRef.current = persisted;
-          setPreferences(persisted);
-          notifyError(t("notifications.desktopBehaviorSaveFailed"), err);
-        }
-      }
-    });
+    const next = { ...(preferencesSaver.current() ?? defaultPreferences), ...patch };
+    return preferencesSaver.submit(next, next);
   }
 
   function handleSystemDnsSettingsChange(settings: SystemDnsSettings): Promise<void> {
-    const current = systemDnsRef.current;
-    const optimistic = current ? applyOptimisticSystemDnsSettings(current, settings) : current;
-    const revision = systemDnsSaveRevisionRef.current + 1;
-    systemDnsSaveRevisionRef.current = revision;
-    pendingSystemDnsSave.current += 1;
-    if (optimistic) {
-      systemDnsRef.current = optimistic;
-      setSystemDns(optimistic);
-    }
-
-    return enqueueSerial(systemDnsSaveQueueRef, async () => {
-      try {
-        const saved = await saveSystemDnsSettings(settings);
-        persistedSystemDnsRef.current = saved;
-        if (revision === systemDnsSaveRevisionRef.current) {
-          systemDnsSaveFailedRef.current = false;
-          systemDnsRef.current = saved;
-          setSystemDns(saved);
-        }
-      } catch (err) {
-        if (revision === systemDnsSaveRevisionRef.current) {
-          systemDnsSaveFailedRef.current = true;
-          const persisted = persistedSystemDnsRef.current;
-          systemDnsRef.current = persisted;
-          setSystemDns(persisted);
-          notifyError(t("notifications.systemDnsSaveFailed"), err);
-        }
-      } finally {
-        pendingSystemDnsSave.current = Math.max(0, pendingSystemDnsSave.current - 1);
-      }
-    });
+    const current = systemDnsSaver.current();
+    const optimistic = current ? applyOptimisticSystemDnsSettings(current, settings) : null;
+    return systemDnsSaver.submit(optimistic, settings);
   }
 
   async function handleApplySystemDns() {
@@ -838,15 +663,12 @@ export function App() {
     mutationLockRef.current = true;
     beginBusy(t("busy.applyingSystemDns"));
     try {
-      await systemDnsSaveQueueRef.current;
-      if (systemDnsSaveFailedRef.current) {
+      await systemDnsSaver.flush();
+      if (systemDnsSaver.lastFailed()) {
         return;
       }
       const next = await applySystemDns();
-      systemDnsSaveFailedRef.current = false;
-      systemDnsRef.current = next;
-      persistedSystemDnsRef.current = next;
-      setSystemDns(next);
+      systemDnsSaver.sync(next);
       notify("success", t("notifications.systemDnsApplied"));
     } catch (err) {
       notifyError(t("notifications.systemDnsApplyFailed"), err);
@@ -863,11 +685,9 @@ export function App() {
     mutationLockRef.current = true;
     beginBusy(t("busy.restoringSystemDns"));
     try {
-      await systemDnsSaveQueueRef.current;
+      await systemDnsSaver.flush();
       const next = await restoreSystemDns();
-      systemDnsRef.current = next;
-      persistedSystemDnsRef.current = next;
-      setSystemDns(next);
+      systemDnsSaver.sync(next);
       notify("success", t("notifications.systemDnsRestored"));
     } catch (err) {
       notifyError(t("notifications.systemDnsRestoreFailed"), err);
@@ -916,7 +736,7 @@ export function App() {
         );
       } else {
         const error = result.upstream.lastErrorMessage
-          ? localizedMessageText(result.upstream.lastErrorMessage, (key, values) => t(key, values))
+          ? localizedMessageText(result.upstream.lastErrorMessage, t)
           : result.upstream.lastError || t("common.unknown");
         notify("warning", t("notifications.upstreamCheckFailed"), t("notifications.upstreamCheckFailedDescription", { name, error }));
       }
@@ -951,9 +771,9 @@ export function App() {
     setQuitting(true);
     beginBusy(t("common.processing"));
     try {
-      const configSaved = await flushPendingConfigSaves();
-      await preferencesSaveQueueRef.current;
-      await systemDnsSaveQueueRef.current;
+      const configSaved = await autoSave.flushPendingSaves();
+      await preferencesSaver.flush();
+      await systemDnsSaver.flush();
       if (!configSaved) {
         setClosePromptOpen(true);
         return;

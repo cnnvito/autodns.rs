@@ -1,4 +1,4 @@
-import { Alert, Button, Card, Form, Input, InputNumber, Modal, Segmented, Space, Switch, Tabs, Typography } from "antd";
+import { Alert, Button, Input, InputNumber, Modal, Segmented, Space, Switch, Tabs, Typography } from "antd";
 import { open } from "@tauri-apps/plugin-dialog";
 import { FolderOpenOutlined } from "@ant-design/icons";
 import { useEffect, useState } from "react";
@@ -10,6 +10,9 @@ import type { ConfigValidation } from "../features/config/validation";
 import { generateServerCertificate, loadCertificateDefaults, validateServerCertificate } from "../shared/api";
 import { errorMessage } from "../shared/format";
 import { CommitOnBlurInput } from "../shared/CommitOnBlurInput";
+import { HintTooltip } from "../shared/HintTooltip";
+import { LoadingPanel } from "../shared/LoadingPanel";
+import { ValidatedField } from "../shared/ValidatedField";
 import type { CertificateDefaults, DesktopConfig, DesktopPreferences, GeneratedCertificate, SystemDnsSettings, SystemDnsStatus } from "../shared/types";
 import { SystemDnsPage } from "./SystemDnsPage";
 
@@ -17,8 +20,6 @@ type SelectOption = {
   value: string;
   label: string;
 };
-
-type ServerFormValues = DesktopConfig["server"];
 
 export type SettingsSection = "general" | "service" | "system-dns" | "cache" | "health";
 
@@ -78,8 +79,6 @@ export function SettingsPage({
   const [tlsValidationBusy, setTlsValidationBusy] = useState(false);
   const [tlsValidationMessage, setTlsValidationMessage] = useState("");
   const [tlsValidationError, setTlsValidationError] = useState("");
-  const [serverForm] = Form.useForm<ServerFormValues>();
-  const serverConfig = doc?.config.server;
   const closeBehaviorOptions: SelectOption[] = [
     { value: "ask", label: t("settings.closeAsk") },
     { value: "hide", label: t("settings.closeHide") },
@@ -93,12 +92,6 @@ export function SettingsPage({
     { key: "health", label: t("settings.tabHealth") }
   ];
   const logLevelOptions = getLogLevelOptions(t);
-
-  useEffect(() => {
-    if (serverConfig) {
-      serverForm.setFieldsValue(serverConfig);
-    }
-  }, [serverConfig, serverForm]);
 
   useEffect(() => {
     if (!doc) {
@@ -157,11 +150,7 @@ export function SettingsPage({
   ]);
 
   if (!doc) {
-    return (
-      <Card title={t("settings.title")}>
-        <Typography.Text type="secondary">{t("settings.loading")}</Typography.Text>
-      </Card>
-    );
+    return <LoadingPanel title={t("settings.title")} text={t("settings.loading")} />;
   }
 
   const currentDoc = doc;
@@ -175,6 +164,13 @@ export function SettingsPage({
     { value: "file", label: t("settings.tlsSourceFile") },
     { value: "inline", label: t("settings.tlsSourceInline") }
   ];
+  const tlsStatusHint = tlsValidationError
+    ? null
+    : tlsValidationBusy
+      ? <Typography.Text type="secondary">{t("busy.processing")}</Typography.Text>
+      : tlsValidationMessage
+        ? <Typography.Text type="success">{tlsValidationMessage}</Typography.Text>
+        : null;
 
   function updateConfig(next: DesktopConfig) {
     onChange({ path: currentDoc.path, config: next });
@@ -182,28 +178,19 @@ export function SettingsPage({
 
   function updateServer(patch: Partial<DesktopConfig["server"]>) {
     const next = { ...cfg.server, ...patch };
-    serverForm.setFieldsValue(next);
-    updateConfig({ ...cfg, server: next });
-  }
-
-  function handleServerFormChange(changed: Partial<ServerFormValues>, values: ServerFormValues) {
-    const next: DesktopConfig["server"] = { ...cfg.server, ...values, ...changed };
-    const modeChanged = typeof changed.mode === "string";
-    const tlsSourceChanged = typeof changed.tlsSource === "string";
-    next.path = next.path || "/dns-query";
-    next.tlsSource = next.tlsSource || "file";
-    if (modeChanged && next.mode !== "doh" && next.mode !== "dot") {
-      next.certFile = "";
-      next.keyFile = "";
-      next.certPem = "";
-      next.keyPem = "";
+    if (patch.mode !== undefined) {
+      next.path = next.path || "/dns-query";
+      next.tlsSource = next.tlsSource || "file";
+      if (next.mode !== "doh" && next.mode !== "dot") {
+        next.certFile = "";
+        next.keyFile = "";
+        next.certPem = "";
+        next.keyPem = "";
+      }
     }
-    if (tlsSourceChanged) {
+    if (patch.tlsSource !== undefined) {
       setTlsValidationMessage("");
       setTlsValidationError("");
-    }
-    if (modeChanged || tlsSourceChanged) {
-      serverForm.setFieldsValue(next);
     }
     updateConfig({ ...cfg, server: next });
   }
@@ -323,104 +310,102 @@ export function SettingsPage({
           ) : null}
 
           {section === "service" ? (
-            <Form
-              form={serverForm}
-              className="settingRows serviceSettingsForm"
-              initialValues={cfg.server}
-              colon={false}
-              requiredMark
-              preserve={false}
-              onValuesChange={handleServerFormChange}
-            >
-              <Form.Item label={t("settings.serviceMode")} name="mode">
-                <SegmentedSetting options={serverModeOptions} />
-              </Form.Item>
-              <Form.Item
-                label={t("settings.listenAddress")}
-                name="listen"
-                required
-                validateStatus={validation.server.listen ? "error" : undefined}
-                help={validation.server.listen}
-                rules={[{ required: true, message: t("validation.server.listen") }]}
-              >
-                <Input placeholder={listenPlaceholder} />
-              </Form.Item>
+            <div className="settingRows">
+              <SettingRow title={t("settings.serviceMode")}>
+                <SegmentedSetting value={cfg.server.mode} options={serverModeOptions} onChange={(value) => updateServer({ mode: value })} />
+              </SettingRow>
+              <SettingRow title={t("settings.listenAddress")} required>
+                <ValidatedField error={validation.server.listen}>
+                  <Input
+                    status={validation.server.listen ? "error" : undefined}
+                    value={cfg.server.listen}
+                    onChange={(event) => updateServer({ listen: event.target.value })}
+                    placeholder={listenPlaceholder}
+                  />
+                </ValidatedField>
+              </SettingRow>
               {dohPathEnabled ? (
-                <Form.Item
-                  label={t("settings.dohPath")}
-                  name="path"
-                  required
-                  validateStatus={validation.server.path ? "error" : undefined}
-                  help={validation.server.path}
-                  rules={[{ required: true, message: t("validation.server.path") }]}
-                >
-                  <Input placeholder="/dns-query" />
-                </Form.Item>
+                <SettingRow title={t("settings.dohPath")} required>
+                  <ValidatedField error={validation.server.path}>
+                    <Input
+                      status={validation.server.path ? "error" : undefined}
+                      value={cfg.server.path}
+                      onChange={(event) => updateServer({ path: event.target.value })}
+                      placeholder="/dns-query"
+                    />
+                  </ValidatedField>
+                </SettingRow>
               ) : null}
               {tlsFileEnabled ? (
                 <>
-                  <Form.Item label={t("settings.tlsSource")} name="tlsSource">
-                    <SegmentedSetting options={tlsSourceOptions} />
-                  </Form.Item>
+                  <SettingRow title={t("settings.tlsSource")}>
+                    <SegmentedSetting value={tlsSource} options={tlsSourceOptions} onChange={(value) => updateServer({ tlsSource: value })} />
+                  </SettingRow>
                   {tlsInlineEnabled ? (
                     <>
-                      <Form.Item
-                        label={t("settings.certPem")}
-                        name="certPem"
-                        required
-                        validateStatus={validation.server.certPem ? "error" : undefined}
-                        help={validation.server.certPem}
-                        rules={[{ required: true, message: t("validation.server.certPem") }]}
-                      >
-                        <Input.TextArea className="tlsPemTextarea" autoSize={{ minRows: 4, maxRows: 8 }} placeholder="-----BEGIN CERTIFICATE-----" />
-                      </Form.Item>
-                      <Form.Item
-                        label={t("settings.keyPem")}
-                        name="keyPem"
-                        required
-                        validateStatus={validation.server.keyPem ? "error" : tlsValidationError ? "error" : tlsValidationBusy ? "validating" : tlsValidationMessage ? "success" : undefined}
-                        help={validation.server.keyPem || tlsValidationError || tlsValidationMessage}
-                        rules={[{ required: true, message: t("validation.server.keyPem") }]}
-                      >
-                        <Input.TextArea className="tlsPemTextarea" autoSize={{ minRows: 4, maxRows: 8 }} placeholder="-----BEGIN PRIVATE KEY-----" />
-                      </Form.Item>
+                      <SettingRow title={t("settings.certPem")} required>
+                        <ValidatedField error={validation.server.certPem}>
+                          <Input.TextArea
+                            className="tlsPemTextarea"
+                            status={validation.server.certPem ? "error" : undefined}
+                            autoSize={{ minRows: 4, maxRows: 8 }}
+                            value={cfg.server.certPem}
+                            onChange={(event) => updateServer({ certPem: event.target.value })}
+                            placeholder="-----BEGIN CERTIFICATE-----"
+                          />
+                        </ValidatedField>
+                      </SettingRow>
+                      <SettingRow title={t("settings.keyPem")} required>
+                        <ValidatedField error={validation.server.keyPem || tlsValidationError}>
+                          <Input.TextArea
+                            className="tlsPemTextarea"
+                            status={validation.server.keyPem || tlsValidationError ? "error" : undefined}
+                            autoSize={{ minRows: 4, maxRows: 8 }}
+                            value={cfg.server.keyPem}
+                            onChange={(event) => updateServer({ keyPem: event.target.value })}
+                            placeholder="-----BEGIN PRIVATE KEY-----"
+                          />
+                          {tlsStatusHint}
+                        </ValidatedField>
+                      </SettingRow>
                     </>
                   ) : (
                     <>
-                      <Form.Item
-                        label={t("settings.certFile")}
-                        required
-                        validateStatus={validation.server.certFile ? "error" : undefined}
-                        help={validation.server.certFile}
-                      >
-                        <Space.Compact style={{ width: "100%" }}>
-                          <Form.Item name="certFile" noStyle rules={[{ required: true, message: t("validation.server.certFile") }]}>
-                            <Input placeholder="/path/to/cert.pem" />
-                          </Form.Item>
-                          <Button type="primary" icon={<FolderOpenOutlined />} onClick={() => chooseServerFile("certFile", t("settings.chooseCertFile"))} aria-label={t("settings.chooseCertFile")} />
-                        </Space.Compact>
-                      </Form.Item>
-                      <Form.Item
-                        label={t("settings.keyFile")}
-                        required
-                        validateStatus={validation.server.keyFile ? "error" : tlsValidationError ? "error" : tlsValidationBusy ? "validating" : tlsValidationMessage ? "success" : undefined}
-                        help={validation.server.keyFile || tlsValidationError || tlsValidationMessage}
-                      >
-                        <Space.Compact style={{ width: "100%" }}>
-                          <Form.Item name="keyFile" noStyle rules={[{ required: true, message: t("validation.server.keyFile") }]}>
-                            <Input placeholder="/path/to/key.pem" />
-                          </Form.Item>
-                          <Button type="primary" icon={<FolderOpenOutlined />} onClick={() => chooseServerFile("keyFile", t("settings.chooseKeyFile"))} aria-label={t("settings.chooseKeyFile")} />
-                        </Space.Compact>
-                      </Form.Item>
-                      <Form.Item label={t("settings.generateCertificate")}>
+                      <SettingRow title={t("settings.certFile")} required>
+                        <ValidatedField error={validation.server.certFile}>
+                          <Space.Compact style={{ width: "100%" }}>
+                            <Input
+                              status={validation.server.certFile ? "error" : undefined}
+                              value={cfg.server.certFile}
+                              onChange={(event) => updateServer({ certFile: event.target.value })}
+                              placeholder="/path/to/cert.pem"
+                            />
+                            <Button type="primary" icon={<FolderOpenOutlined />} onClick={() => chooseServerFile("certFile", t("settings.chooseCertFile"))} aria-label={t("settings.chooseCertFile")} />
+                          </Space.Compact>
+                        </ValidatedField>
+                      </SettingRow>
+                      <SettingRow title={t("settings.keyFile")} required>
+                        <ValidatedField error={validation.server.keyFile || tlsValidationError}>
+                          <Space.Compact style={{ width: "100%" }}>
+                            <Input
+                              status={validation.server.keyFile || tlsValidationError ? "error" : undefined}
+                              value={cfg.server.keyFile}
+                              onChange={(event) => updateServer({ keyFile: event.target.value })}
+                              placeholder="/path/to/key.pem"
+                            />
+                            <Button type="primary" icon={<FolderOpenOutlined />} onClick={() => chooseServerFile("keyFile", t("settings.chooseKeyFile"))} aria-label={t("settings.chooseKeyFile")} />
+                          </Space.Compact>
+                          {tlsStatusHint}
+                        </ValidatedField>
+                      </SettingRow>
+                      <SettingRow title={t("settings.generateCertificate")}>
                         <Button onClick={openCertificateModal}>{t("settings.generateCertificate")}</Button>
-                      </Form.Item>
+                      </SettingRow>
                     </>
                   )}
                 </>
               ) : null}
-            </Form>
+            </div>
           ) : null}
 
           {section === "system-dns" ? (
@@ -441,19 +426,19 @@ export function SettingsPage({
                 <SettingRow title={t("settings.cacheEnabled")}>
                   <Switch checkedChildren={t("common.enabled")} unCheckedChildren={t("common.disabled")} checked={cfg.cache.enabled} onChange={(checked) => updateCache("enabled", checked)} />
                 </SettingRow>
-                <SettingRow title={t("settings.maxEntries")}>
+                <SettingRow title={t("settings.maxEntries")} description={t("settings.maxEntriesDescription")}>
                   <InlineNumberSetting value={cfg.cache.maxEntries} error={validation.cache.maxEntries} onChange={(value) => updateCache("maxEntries", value)} />
                 </SettingRow>
-                <SettingRow title={t("settings.maxEntrySize")}>
+                <SettingRow title={t("settings.maxEntrySize")} description={t("settings.maxEntrySizeDescription")}>
                   <InlineNumberSetting value={cfg.cache.maxEntrySize} error={validation.cache.maxEntrySize} onChange={(value) => updateCache("maxEntrySize", value)} />
                 </SettingRow>
-                <SettingRow title={t("settings.minTtl")}>
+                <SettingRow title={t("settings.minTtl")} description={t("settings.minTtlDescription")}>
                   <InlineNumberSetting value={cfg.cache.minTTL} error={validation.cache.minTTL} onChange={(value) => updateCache("minTTL", value)} />
                 </SettingRow>
-                <SettingRow title={t("settings.maxTtl")}>
+                <SettingRow title={t("settings.maxTtl")} description={t("settings.maxTtlDescription")}>
                   <InlineNumberSetting value={cfg.cache.maxTTL} error={validation.cache.maxTTL} onChange={(value) => updateCache("maxTTL", value)} />
                 </SettingRow>
-                <SettingRow title={t("settings.negativeTtl")}>
+                <SettingRow title={t("settings.negativeTtl")} description={t("settings.negativeTtlDescription")}>
                   <InlineNumberSetting value={cfg.cache.negativeTTL} error={validation.cache.negativeTTL} onChange={(value) => updateCache("negativeTTL", value)} />
                 </SettingRow>
               </div>
@@ -469,24 +454,24 @@ export function SettingsPage({
                 <Switch checkedChildren={t("common.enabled")} unCheckedChildren={t("common.disabled")} checked={cfg.healthcheck.enabled} onChange={(checked) => updateHealthcheck("enabled", checked)} />
               </SettingRow>
               <SettingRow title={t("settings.healthInterval")}>
-                <ValidatedInput error={validation.healthcheck.interval}>
+                <ValidatedField error={validation.healthcheck.interval}>
                   <CommitOnBlurInput status={validation.healthcheck.interval ? "error" : undefined} value={cfg.healthcheck.interval} onCommit={(value) => updateHealthcheck("interval", value)} placeholder="30s" />
-                </ValidatedInput>
+                </ValidatedField>
               </SettingRow>
               <SettingRow title={t("settings.healthTimeout")}>
-                <ValidatedInput error={validation.healthcheck.timeout}>
+                <ValidatedField error={validation.healthcheck.timeout}>
                   <CommitOnBlurInput status={validation.healthcheck.timeout ? "error" : undefined} value={cfg.healthcheck.timeout} onCommit={(value) => updateHealthcheck("timeout", value)} placeholder="2s" />
-                </ValidatedInput>
+                </ValidatedField>
               </SettingRow>
               <SettingRow title={t("settings.healthDomain")}>
-                <ValidatedInput error={validation.healthcheck.domain}>
+                <ValidatedField error={validation.healthcheck.domain}>
                   <CommitOnBlurInput status={validation.healthcheck.domain ? "error" : undefined} value={cfg.healthcheck.domain} onCommit={(value) => updateHealthcheck("domain", value)} placeholder="." />
-                </ValidatedInput>
+                </ValidatedField>
               </SettingRow>
-              <SettingRow title={t("settings.failureThreshold")}>
+              <SettingRow title={t("settings.failureThreshold")} description={t("settings.failureThresholdDescription")}>
                 <InlineNumberSetting value={cfg.healthcheck.failureThreshold} error={validation.healthcheck.failureThreshold} onChange={(value) => updateHealthcheck("failureThreshold", value)} />
               </SettingRow>
-              <SettingRow title={t("settings.recoveryThreshold")}>
+              <SettingRow title={t("settings.recoveryThreshold")} description={t("settings.recoveryThresholdDescription")}>
                 <InlineNumberSetting value={cfg.healthcheck.recoveryThreshold} error={validation.healthcheck.recoveryThreshold} onChange={(value) => updateHealthcheck("recoveryThreshold", value)} />
               </SettingRow>
             </div>
@@ -556,7 +541,7 @@ function InlineNumberSetting({ value, error, onChange }: { value: number; error?
   }, [value]);
 
   return (
-    <ValidatedInput error={error}>
+    <ValidatedField error={error}>
       <InputNumber
         className="workbenchInlineNumber"
         status={error ? "error" : undefined}
@@ -581,7 +566,7 @@ function InlineNumberSetting({ value, error, onChange }: { value: number; error?
         }}
         onPressEnter={(event) => event.currentTarget.blur()}
       />
-    </ValidatedInput>
+    </ValidatedField>
   );
 }
 
@@ -607,8 +592,11 @@ function SettingRow({ title, description, required, children }: { title: string;
   return (
     <div className="settingRow">
       <div className="settingRowLabel">
-        <strong>{title}{required ? <span className="settingRequiredMark">*</span> : null}</strong>
-        {description ? <span>{description}</span> : null}
+        <strong>
+          {title}
+          {required ? <span className="settingRequiredMark">*</span> : null}
+          <HintTooltip hint={description} />
+        </strong>
       </div>
       <div>{children}</div>
     </div>
@@ -636,15 +624,4 @@ function CertificateModalField({ title, children }: { title: string; children: R
   );
 }
 
-function ValidatedInput({ error, children }: { error?: string; children: React.ReactNode }) {
-  return (
-    <Space direction="vertical" size={4} className="pageFill">
-      {children}
-      <FieldError message={error} />
-    </Space>
-  );
-}
 
-function FieldError({ message }: { message?: string }) {
-  return message ? <Typography.Text type="danger">{message}</Typography.Text> : null;
-}

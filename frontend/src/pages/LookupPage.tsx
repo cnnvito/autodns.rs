@@ -42,7 +42,7 @@ export function LookupPage({ running }: { running: boolean }) {
       setResult(await lookupDomain(domain.trim(), recordType));
     } catch (err) {
       setResult(null);
-      setError(errorMessage(err, (key, values) => t(key, values)));
+      setError(errorMessage(err, t));
     } finally {
       setBusy(false);
     }

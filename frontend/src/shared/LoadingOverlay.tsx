@@ -8,7 +8,7 @@ type LoadingOverlayProps = {
 export function LoadingOverlay({ text, compact = false }: LoadingOverlayProps) {
   return (
     <div className={`loadingOverlay ${compact ? "loadingOverlayCompact" : ""}`} role="status" aria-live="polite">
-      <Spin size={compact ? "default" : "large"} />
+      <Spin size={compact ? "medium" : "large"} />
       <span className="loadingOverlayText">{text}</span>
     </div>
   );

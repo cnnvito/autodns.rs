@@ -195,19 +195,26 @@ export const enUS = {
     certificateFilePrefix: "File prefix",
     caCertFile: "CA certificate",
     logLevel: "Log level",
-    cacheEnabled: "Cache",
+    cacheEnabled: "Enable cache",
     clearNow: "Clear now",
     maxEntries: "Max entries",
-    maxEntrySize: "Entry size",
+    maxEntriesDescription: "Older entries are evicted automatically once exceeded.",
+    maxEntrySize: "Max entry size (bytes)",
+    maxEntrySizeDescription: "Responses larger than this are not cached.",
     minTtl: "Min TTL",
+    minTtlDescription: "Lower bound in seconds; shorter upstream TTLs are raised to this value.",
     maxTtl: "Max TTL",
+    maxTtlDescription: "Upper bound in seconds; longer upstream TTLs are capped at this value.",
     negativeTtl: "Negative TTL",
+    negativeTtlDescription: "Seconds to cache negative results such as NXDOMAIN or empty answers; 0 falls back to the regular TTL rules.",
     healthcheckEnabled: "Health check",
     healthInterval: "Check interval",
     healthTimeout: "Check timeout",
     healthDomain: "Probe domain",
     failureThreshold: "Failure threshold",
+    failureThresholdDescription: "A single failure temporarily removes an upstream from query rotation and starts recovery probing; this many consecutive failures mark it as unhealthy in the UI.",
     recoveryThreshold: "Recovery threshold",
+    recoveryThresholdDescription: "After this many consecutive successes, the upstream rejoins query rotation.",
     defaultPlaceholder: "Default"
   },
   options: {
@@ -263,8 +270,8 @@ export const enUS = {
       maxTtl: "Max TTL cannot be lower than min TTL."
     },
     health: {
-      interval: "Check interval format is invalid, for example 30s.",
-      timeout: "Check timeout format is invalid, for example 2s.",
+      interval: "Check interval must be greater than 0, for example 30s.",
+      timeout: "Check timeout must be greater than 0, for example 2s.",
       domain: "Probe domain is invalid."
     }
   },
@@ -331,8 +338,8 @@ export const enUS = {
     total: "{{count}} total",
     loading: "Loading query history.",
     emptyFiltered: "No query history matches the current filters.",
-    topDomains: "Top domains",
-    noTopDomains: "No top domains",
+    topDomains: "Frequent domains",
+    noTopDomains: "No frequent domains yet",
     recentAverage: "Recent {{time}} · avg {{duration}} ms",
     columns: {
       time: "Time",
@@ -347,7 +354,8 @@ export const enUS = {
       attempts: "Attempts",
       route: "Route",
       defaultRoute: "Default",
-      error: "Error"
+      error: "Error",
+      answers: "Answers"
     },
     source: {
       upstream: "Upstream",
@@ -491,8 +499,12 @@ export const enUS = {
     title: "Upstreams and proxies",
     resolverOptions: "Resolver options",
     timeout: "Timeout",
+    timeoutHint: "Timeout for a single upstream query, e.g. 5s or 500ms.",
     bootstrapDns: "Bootstrap DNS",
+    bootstrapDnsHint: "Plain DNS servers used to resolve DoH/DoT upstream hostnames, avoiding the chicken-and-egg problem.",
     defaultProxy: "Default proxy",
+    defaultProxyHint: "Proxy used by upstreams that do not specify their own.",
+    ipv6Hint: "When off, AAAA (IPv6) records are filtered from responses and only IPv4 results are returned.",
     direct: "Direct",
     none: "None",
     upstreamDns: "Upstream DNS",

@@ -6,6 +6,7 @@ import type { ResolvedLanguage } from "../i18n/language";
 
 import { clearDnsHistory, dnsHistoryTopDomains, dnsHistoryUpstreamNames, listDnsHistory } from "../shared/api";
 import { errorMessage, formatDate, localizedMessageText } from "../shared/format";
+import { useDebouncedValue } from "../shared/useDebouncedValue";
 import type {
   DnsHistoryEntry,
   DnsHistoryStatusFilter,
@@ -20,9 +21,7 @@ export function HistoryPage({ language }: { language: ResolvedLanguage }) {
   const { t } = useTranslation();
   const { modal } = AntdApp.useApp();
   const [domain, setDomain] = useState("");
-  const [filter, setFilter] = useState("");
   const [upstreamName, setUpstreamName] = useState("");
-  const [upstreamFilter, setUpstreamFilter] = useState("");
   const [statusFilter, setStatusFilter] = useState<DnsHistoryStatusFilter>("all");
   const [historyWindow, setHistoryWindow] = useState<DnsHistoryWindow>("24h");
   const [page, setPage] = useState(1);
@@ -33,22 +32,12 @@ export function HistoryPage({ language }: { language: ResolvedLanguage }) {
   const [total, setTotal] = useState(0);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const filter = useDebouncedValue(domain.trim(), 300);
+  const upstreamFilter = useDebouncedValue(upstreamName.trim(), 300);
 
   useEffect(() => {
-    const timer = window.setTimeout(() => {
-      setFilter(domain.trim());
-      setPage(1);
-    }, 300);
-    return () => window.clearTimeout(timer);
-  }, [domain]);
-
-  useEffect(() => {
-    const timer = window.setTimeout(() => {
-      setUpstreamFilter(upstreamName.trim());
-      setPage(1);
-    }, 300);
-    return () => window.clearTimeout(timer);
-  }, [upstreamName]);
+    setPage(1);
+  }, [filter, upstreamFilter]);
 
   const refresh = useCallback(async () => {
     setBusy(true);
@@ -64,7 +53,7 @@ export function HistoryPage({ language }: { language: ResolvedLanguage }) {
       setTopDomains(nextTopDomains);
       setUpstreamOptions(nextUpstreamOptions);
     } catch (err) {
-      setError(errorMessage(err, (key, values) => t(key, values)));
+      setError(errorMessage(err, t));
     } finally {
       setBusy(false);
     }
@@ -107,7 +96,7 @@ export function HistoryPage({ language }: { language: ResolvedLanguage }) {
           setTotal(0);
           setPage(1);
         } catch (err) {
-          setError(errorMessage(err, (key, values) => t(key, values)));
+          setError(errorMessage(err, t));
         } finally {
           setBusy(false);
         }
@@ -158,35 +147,39 @@ export function HistoryPage({ language }: { language: ResolvedLanguage }) {
   return (
     <section className="pageWorkbench">
       <div className="workbenchToolbar">
-        <div className="workbenchToolbarMain">
-          <span className="workbenchTitle">{t("history.title")}</span>
-            <Input
-              className="workbenchFluidInput"
-              prefix={<SearchOutlined />}
-              value={domain}
-              onChange={(event) => setDomain(event.target.value)}
-              placeholder="example.com"
-            />
-            <AutoComplete
-              className="workbenchHistoryUpstreamInput"
-              allowClear
-              value={upstreamName}
-              onChange={(value) => setUpstreamName(value)}
-              onSelect={(value) => setUpstreamName(value)}
-              options={visibleUpstreamOptions}
-              placeholder={t("history.upstreamFilter")}
-            />
-            <FilterControl label={t("history.status")} options={statusOptions} value={statusFilter} onChange={updateStatusFilter} />
-            <FilterControl label={t("history.time")} options={windowOptions} value={historyWindow} onChange={updateWindow} />
-          <Tag>{t("history.recordsCount", { count: total })}</Tag>
+        <div className="workbenchToolbarRow">
+          <div className="workbenchToolbarMain">
+            <span className="workbenchTitle">{t("history.title")}</span>
+            <Tag>{t("history.recordsCount", { count: total })}</Tag>
+          </div>
+          <div className="workbenchToolbarActions">
+            <Button icon={<ReloadOutlined />} onClick={refresh} loading={busy}>
+              {t("history.refresh")}
+            </Button>
+            <Button icon={<DeleteOutlined />} onClick={clearHistory} disabled={busy} danger>
+              {t("history.clear")}
+            </Button>
+          </div>
         </div>
-        <div className="workbenchToolbarActions">
-          <Button icon={<ReloadOutlined />} onClick={refresh} disabled={busy}>
-            {t("history.refresh")}
-          </Button>
-          <Button icon={<DeleteOutlined />} onClick={clearHistory} disabled={busy} danger>
-            {t("history.clear")}
-          </Button>
+        <div className="workbenchToolbarFilters">
+          <Input
+            className="workbenchFluidInput"
+            prefix={<SearchOutlined />}
+            value={domain}
+            onChange={(event) => setDomain(event.target.value)}
+            placeholder="example.com"
+          />
+          <AutoComplete
+            className="workbenchHistoryUpstreamInput"
+            allowClear
+            value={upstreamName}
+            onChange={(value) => setUpstreamName(value)}
+            onSelect={(value) => setUpstreamName(value)}
+            options={visibleUpstreamOptions}
+            placeholder={t("history.upstreamFilter")}
+          />
+          <FilterControl label={t("history.status")} options={statusOptions} value={statusFilter} onChange={updateStatusFilter} />
+          <FilterControl label={t("history.time")} options={windowOptions} value={historyWindow} onChange={updateWindow} />
         </div>
       </div>
 
@@ -213,7 +206,6 @@ export function HistoryPage({ language }: { language: ResolvedLanguage }) {
               pageSizeOptions: historyPageSizeOptions,
               showSizeChanger: true,
               showLessItems: true,
-              showTotal: (value) => t("history.total", { count: value }),
               onChange: updatePage
             }}
             expandable={{
@@ -225,7 +217,8 @@ export function HistoryPage({ language }: { language: ResolvedLanguage }) {
                     { key: "ttl", label: "TTL", children: Number.isFinite(item.minTtl) ? `${item.minTtl} s` : "-" },
                     { key: "attempts", label: t("history.detail.attempts"), children: item.attemptCount },
                     { key: "route", label: t("history.detail.route"), children: item.routeId > 0 ? `#${item.routeId}` : t("history.detail.defaultRoute") },
-                    { key: "error", label: t("history.detail.error"), children: historyErrorText(item, t) || "-" }
+                    { key: "error", label: t("history.detail.error"), children: historyErrorText(item, t) || "-" },
+                    { key: "answers", label: t("history.detail.answers"), span: 4, children: item.answers || "-" }
                   ]}
                 />
               )
@@ -244,7 +237,7 @@ export function HistoryPage({ language }: { language: ResolvedLanguage }) {
             dataSource={topDomains}
             locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t("history.noTopDomains")} /> }}
             renderItem={(item, index) => (
-              <List.Item onClick={() => setDomain(item.domain)} style={{ cursor: "pointer" }} extra={<Typography.Text strong>{item.count}</Typography.Text>}>
+              <List.Item onClick={() => setDomain(item.domain)} className="historyTopDomainItem" extra={<Typography.Text strong>{item.count}</Typography.Text>}>
                 <List.Item.Meta
                   avatar={<Tag>{index + 1}</Tag>}
                   title={item.domain}

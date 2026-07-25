@@ -543,7 +543,9 @@ h2 {
 .workbenchToolbar {
   display: flex;
   flex-wrap: wrap;
-  align-items: center;
+  /* Top-align so the actions block stays level with the first row of controls when the
+     filter area wraps onto multiple lines; identical to center when everything fits. */
+  align-items: flex-start;
   justify-content: space-between;
   gap: 12px;
   min-height: 0;
@@ -555,6 +557,26 @@ h2 {
 .workbenchToolbarMain,
 .workbenchToolbarActions {
   display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+/* Full-width rows inside a toolbar: first row holds title + actions, second row filters. */
+.workbenchToolbarRow {
+  display: flex;
+  flex: 1 1 100%;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+}
+
+.workbenchToolbarFilters {
+  display: flex;
+  flex: 1 1 100%;
   flex-wrap: wrap;
   align-items: center;
   gap: 8px;
@@ -813,37 +835,6 @@ h2 {
   border-block-end: 0;
 }
 
-.serviceSettingsForm.ant-form .ant-form-item {
-  display: grid;
-  grid-template-columns: minmax(0, 0.42fr) minmax(0, 1fr);
-  align-items: center;
-  gap: 18px;
-  min-height: 0;
-  margin: 0;
-  padding: 10px 12px;
-  border-block-end: 1px solid var(--ant-color-border-secondary);
-}
-
-.serviceSettingsForm.ant-form .ant-form-item:last-child {
-  border-block-end: 0;
-}
-
-.serviceSettingsForm.ant-form .ant-form-item-label {
-  min-width: 0;
-  padding: 0;
-  text-align: start;
-}
-
-.serviceSettingsForm.ant-form .ant-form-item-label > label {
-  height: auto;
-  font-size: 13px;
-  font-weight: 600;
-}
-
-.serviceSettingsForm.ant-form .ant-form-item-control {
-  min-width: 0;
-}
-
 .settingRowLabel {
   min-width: 0;
 }
@@ -853,17 +844,23 @@ h2 {
   font-size: 13px;
 }
 
+/* "?" hint icon appended to labels; the description lives in its tooltip. */
+.labelHintIcon {
+  margin-inline-start: 5px;
+  color: var(--ant-color-text-tertiary);
+  font-size: 12px;
+  cursor: help;
+}
+
+.labelHintIcon:hover {
+  color: var(--ant-color-text-secondary);
+}
+
 .settingRequiredMark {
   margin-inline-start: 4px;
   color: var(--ant-color-error);
 }
 
-.settingRowLabel span {
-  display: block;
-  margin-top: 2px;
-  color: var(--ant-color-text-secondary);
-  font-size: 12px;
-}
 
 .settingActions {
   display: flex;
@@ -1040,8 +1037,7 @@ h2 {
 @media (max-width: 1180px) {
   .workbenchBody,
   .workbenchBodyWideInspector,
-  .settingRow,
-  .serviceSettingsForm.ant-form .ant-form-item {
+  .settingRow {
     grid-template-columns: minmax(0, 1fr);
   }
 
@@ -1079,4 +1075,17 @@ h2 {
   .configSaveShelfActions .ant-btn {
     flex: 1 1 0;
   }
+}
+
+/* Clickable frequent-domain entries in the history sidebar: hover feedback signals that
+   clicking filters the list by that domain. */
+.historyTopDomainItem {
+  cursor: pointer;
+  border-radius: 6px;
+  padding-inline: 8px;
+  transition: background-color 0.15s ease;
+}
+
+.historyTopDomainItem:hover {
+  background: var(--ant-color-fill-tertiary);
 }

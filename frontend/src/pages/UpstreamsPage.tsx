@@ -1,6 +1,5 @@
-import { Button, Card, Empty, Input, Select, Space, Switch, Table, Tag, Tooltip, Typography, type TableColumnsType } from "antd";
+import { Button, Empty, Input, Select, Space, Switch, Table, Tag, Tooltip, type TableColumnsType } from "antd";
 import { ArrowDownOutlined, ArrowUpOutlined, DeleteOutlined, PlusOutlined, ReloadOutlined } from "@ant-design/icons";
-import { useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import { proxyProtocolOptions, upstreamProtocolOptions } from "../features/config/options";
@@ -8,6 +7,10 @@ import type { ConfigPageProps } from "../features/config/doc";
 import { defaultPortForProtocol, defaultPortForProxy } from "../features/config/transforms";
 import type { ConfigValidation } from "../features/config/validation";
 import { CommitOnBlurInput } from "../shared/CommitOnBlurInput";
+import { FieldWithError } from "../shared/FieldWithError";
+import { HintTooltip } from "../shared/HintTooltip";
+import { LoadingPanel } from "../shared/LoadingPanel";
+import { ParsedInput } from "../shared/ParsedInput";
 import type { ProxyConfig, UpstreamConfig } from "../shared/types";
 
 type UpstreamEndpointPatch = Pick<UpstreamConfig, "protocol" | "host" | "port" | "path">;
@@ -22,11 +25,9 @@ type UpstreamsPageProps = ConfigPageProps & {
 
 export function UpstreamsPage({ doc, onChange, validation, running, checkingUpstreams, onCheckHealth }: UpstreamsPageProps) {
   const { t } = useTranslation();
-  const [endpointDrafts, setEndpointDrafts] = useState<Record<number, string>>({});
-  const [proxyAddressDrafts, setProxyAddressDrafts] = useState<Record<number, string>>({});
 
   if (!doc) {
-    return <LoadingPanel />;
+    return <LoadingPanel title={t("upstreams.loadingTitle")} text={t("upstreams.loading")} />;
   }
 
   const currentDoc = doc;
@@ -48,12 +49,10 @@ export function UpstreamsPage({ doc, onChange, validation, running, checkingUpst
         { name: `upstream-${cfg.resolver.upstreams.length + 1}`, protocol: "udp", host: "", port: "", path: "", serverName: "", proxy: "" }
       ]
     });
-    setEndpointDrafts({});
   }
 
   function removeUpstream(index: number) {
     updateResolver({ upstreams: cfg.resolver.upstreams.filter((_, i) => i !== index) });
-    setEndpointDrafts({});
   }
 
   function moveUpstream(index: number, direction: -1 | 1) {
@@ -64,7 +63,6 @@ export function UpstreamsPage({ doc, onChange, validation, running, checkingUpst
     const upstreams = [...cfg.resolver.upstreams];
     [upstreams[index], upstreams[target]] = [upstreams[target], upstreams[index]];
     updateResolver({ upstreams });
-    setEndpointDrafts({});
   }
 
   function updateProxy(index: number, patch: Partial<ProxyConfig>) {
@@ -80,7 +78,6 @@ export function UpstreamsPage({ doc, onChange, validation, running, checkingUpst
     updateResolver({
       proxies: [...cfg.resolver.proxies, { name: `proxy-${cfg.resolver.proxies.length + 1}`, protocol: "socks5", host: "", port: "", username: "", password: "" }]
     });
-    setProxyAddressDrafts({});
   }
 
   function removeProxy(index: number) {
@@ -89,64 +86,22 @@ export function UpstreamsPage({ doc, onChange, validation, running, checkingUpst
     const upstreams = cfg.resolver.upstreams.map((item) => (item.proxy === removed ? { ...item, proxy: "" } : item));
     const defaultProxy = cfg.resolver.defaultProxy === removed ? "" : cfg.resolver.defaultProxy;
     updateResolver({ proxies, upstreams, defaultProxy });
-    setProxyAddressDrafts({});
   }
 
   function updateBootstrapDns(values: string[]) {
     updateResolver({ bootstrapDns: values.map((item) => item.trim()).filter(Boolean) });
   }
 
-  function updateEndpointInput(index: number, value: string) {
-    setEndpointDrafts((drafts) => ({ ...drafts, [index]: value }));
-    const patch = parseUpstreamEndpoint(value);
-    if (patch) {
-      updateUpstream(index, patch);
-    }
-  }
-
-  function commitEndpointInput(index: number) {
-    const draft = endpointDrafts[index];
-    if (draft === undefined) {
-      return;
-    }
-    const patch = parseUpstreamEndpoint(draft);
-    if (patch) {
-      updateUpstream(index, patch);
-    }
-    setEndpointDrafts((drafts) => {
-      const next = { ...drafts };
-      delete next[index];
-      return next;
-    });
-  }
-
-  function updateProxyAddressInput(index: number, value: string) {
-    setProxyAddressDrafts((drafts) => ({ ...drafts, [index]: value }));
-    const patch = parseProxyAddress(value, cfg.resolver.proxies[index]);
-    if (patch) {
-      updateProxy(index, patch);
-    }
-  }
-
-  function commitProxyAddressInput(index: number) {
-    const draft = proxyAddressDrafts[index];
-    if (draft === undefined) {
-      return;
-    }
-    const patch = parseProxyAddress(draft, cfg.resolver.proxies[index]);
-    if (patch) {
-      updateProxy(index, patch);
-    }
-    setProxyAddressDrafts((drafts) => {
-      const next = { ...drafts };
-      delete next[index];
-      return next;
-    });
-  }
-
   const proxyOptions = [{ value: "", label: t("upstreams.direct") }, ...cfg.resolver.proxies.map((proxy) => ({ value: proxy.name, label: proxy.name }))];
   const upstreamRows = cfg.resolver.upstreams.map((item, index) => ({ key: `upstream-${index}`, index, item }));
   const proxyRows = cfg.resolver.proxies.map((item, index) => ({ key: `proxy-${index}`, item, index }));
+  // Rows whose endpoint the user has not started filling stay visually quiet: suppressing
+  // error display for a fresh row avoids instant red after "add". Validation itself is
+  // untouched, so auto-save stays blocked until the row is completed or removed.
+  const upstreamRowErrors = (record: (typeof upstreamRows)[number]) =>
+    record.item.host.trim() || record.item.port.trim() ? validation.upstreams[record.index] : undefined;
+  const proxyRowErrors = (record: (typeof proxyRows)[number]) =>
+    record.item.host.trim() || record.item.port.trim() ? validation.proxies[record.index] : undefined;
   const upstreamColumns: TableColumnsType<(typeof upstreamRows)[number]> = [
     {
       title: t("upstreams.order"),
@@ -178,34 +133,25 @@ export function UpstreamsPage({ doc, onChange, validation, running, checkingUpst
       title: t("upstreams.upstreamName"),
       width: 160,
       render: (_value, record) => (
-        <FieldWithError error={validation.upstreams[record.index]?.name}>
-          <Input status={validation.upstreams[record.index]?.name ? "error" : undefined} value={record.item.name} onChange={(event) => updateUpstream(record.index, { name: event.target.value })} placeholder="cloudflare" />
+        <FieldWithError error={upstreamRowErrors(record)?.name}>
+          <Input status={upstreamRowErrors(record)?.name ? "error" : undefined} value={record.item.name} onChange={(event) => updateUpstream(record.index, { name: event.target.value })} placeholder="cloudflare" />
         </FieldWithError>
       )
     },
     {
       title: t("upstreams.endpoint"),
       width: 310,
-      render: (_value, record) => {
-        const draft = endpointDrafts[record.index];
-        const endpointValue = draft ?? formatUpstreamEndpoint(record.item);
-        const endpointError = draft !== undefined && !parseUpstreamEndpoint(draft)
-          ? t("upstreams.endpointInvalid")
-          : validation.upstreams[record.index]?.endpoint;
-        return (
-          <FieldWithError error={endpointError}>
-            <Input
-              className="upstreamEndpointInput"
-              value={endpointValue}
-              status={endpointError ? "error" : undefined}
-              onChange={(event) => updateEndpointInput(record.index, event.target.value)}
-              onBlur={() => commitEndpointInput(record.index)}
-              onPressEnter={(event) => event.currentTarget.blur()}
-              placeholder="udp://1.1.1.1:53"
-            />
-          </FieldWithError>
-        );
-      }
+      render: (_value, record) => (
+        <ParsedInput
+          className="upstreamEndpointInput"
+          value={formatUpstreamEndpoint(record.item)}
+          parse={parseUpstreamEndpoint}
+          onApply={(patch) => updateUpstream(record.index, patch)}
+          invalidText={t("upstreams.endpointInvalid")}
+          externalError={upstreamRowErrors(record)?.endpoint}
+          placeholder="udp://1.1.1.1:53"
+        />
+      )
     },
     {
       title: "SNI",
@@ -227,8 +173,8 @@ export function UpstreamsPage({ doc, onChange, validation, running, checkingUpst
       title: t("upstreams.proxy"),
       width: 140,
       render: (_value, record) => (
-        <FieldWithError error={validation.upstreams[record.index]?.proxy}>
-          <Select className="workbenchInlineSelect" status={validation.upstreams[record.index]?.proxy ? "error" : undefined} value={record.item.proxy} onChange={(value) => updateUpstream(record.index, { proxy: value })} options={proxyOptions} />
+        <FieldWithError error={upstreamRowErrors(record)?.proxy}>
+          <Select className="workbenchInlineSelect" status={upstreamRowErrors(record)?.proxy ? "error" : undefined} value={record.item.proxy} onChange={(value) => updateUpstream(record.index, { proxy: value })} options={proxyOptions} />
         </FieldWithError>
       )
     },
@@ -248,7 +194,7 @@ export function UpstreamsPage({ doc, onChange, validation, running, checkingUpst
               aria-label={t("upstreams.checkHealthFor", { name: record.item.name || t("upstreams.numberedUpstream", { index: record.index + 1 }) })}
             />
           </Tooltip>
-          <Button icon={<DeleteOutlined />} onClick={() => removeUpstream(record.index)} disabled={cfg.resolver.upstreams.length <= 1} aria-label={t("upstreams.deleteUpstream")} />
+          <Button danger icon={<DeleteOutlined />} onClick={() => removeUpstream(record.index)} disabled={cfg.resolver.upstreams.length <= 1} aria-label={t("upstreams.deleteUpstream")} />
         </Space>
       )
     }
@@ -258,8 +204,8 @@ export function UpstreamsPage({ doc, onChange, validation, running, checkingUpst
       title: t("upstreams.name"),
       width: 150,
       render: (_value, record) => (
-        <FieldWithError error={validation.proxies[record.index]?.name}>
-          <Input status={validation.proxies[record.index]?.name ? "error" : undefined} value={record.item.name} onChange={(event) => updateProxy(record.index, { name: event.target.value })} placeholder={t("upstreams.name")} />
+        <FieldWithError error={proxyRowErrors(record)?.name}>
+          <Input status={proxyRowErrors(record)?.name ? "error" : undefined} value={record.item.name} onChange={(event) => updateProxy(record.index, { name: event.target.value })} placeholder={t("upstreams.name")} />
         </FieldWithError>
       )
     },
@@ -278,26 +224,17 @@ export function UpstreamsPage({ doc, onChange, validation, running, checkingUpst
     {
       title: t("upstreams.address"),
       width: 220,
-      render: (_value, record) => {
-        const draft = proxyAddressDrafts[record.index];
-        const addressValue = draft ?? formatProxyAddress(record.item);
-        const addressError = draft !== undefined && !parseProxyAddress(draft, record.item)
-          ? t("upstreams.addressInvalid")
-          : validation.proxies[record.index]?.address;
-        return (
-          <FieldWithError error={addressError}>
-            <Input
-              className="proxyAddressInput"
-              value={addressValue}
-              status={addressError ? "error" : undefined}
-              onChange={(event) => updateProxyAddressInput(record.index, event.target.value)}
-              onBlur={() => commitProxyAddressInput(record.index)}
-              onPressEnter={(event) => event.currentTarget.blur()}
-              placeholder="127.0.0.1:1080"
-            />
-          </FieldWithError>
-        );
-      }
+      render: (_value, record) => (
+        <ParsedInput
+          className="proxyAddressInput"
+          value={formatProxyAddress(record.item)}
+          parse={(raw) => parseProxyAddress(raw, record.item)}
+          onApply={(patch) => updateProxy(record.index, patch)}
+          invalidText={t("upstreams.addressInvalid")}
+          externalError={proxyRowErrors(record)?.address}
+          placeholder="127.0.0.1:1080"
+        />
+      )
     },
     {
       title: t("upstreams.username"),
@@ -319,7 +256,7 @@ export function UpstreamsPage({ doc, onChange, validation, running, checkingUpst
       fixed: "right",
       align: "right",
       render: (_value, record) => (
-        <Button icon={<DeleteOutlined />} onClick={() => removeProxy(record.index)} aria-label={t("upstreams.deleteProxy")} />
+        <Button danger icon={<DeleteOutlined />} onClick={() => removeProxy(record.index)} aria-label={t("upstreams.deleteProxy")} />
       )
     }
   ];
@@ -336,7 +273,7 @@ export function UpstreamsPage({ doc, onChange, validation, running, checkingUpst
         <div className="resolverOptionsBar" aria-label={t("upstreams.resolverOptions")}>
           <span className="resolverOptionsTitle">{t("upstreams.resolverOptions")}</span>
           <div className="resolverOptionField resolverOptionFieldNarrow">
-            <span>{t("upstreams.timeout")}</span>
+            <span>{t("upstreams.timeout")}<HintTooltip hint={t("upstreams.timeoutHint")} /></span>
             <CommitOnBlurInput
               size="small"
               status={validation.timeout ? "error" : undefined}
@@ -347,7 +284,7 @@ export function UpstreamsPage({ doc, onChange, validation, running, checkingUpst
             />
           </div>
           <div className="resolverOptionField resolverOptionFieldWide">
-            <span>{t("upstreams.bootstrapDns")}</span>
+            <span>{t("upstreams.bootstrapDns")}<HintTooltip hint={t("upstreams.bootstrapDnsHint")} /></span>
             <Select
               size="small"
               mode="tags"
@@ -360,7 +297,7 @@ export function UpstreamsPage({ doc, onChange, validation, running, checkingUpst
             />
           </div>
           <div className="resolverOptionField resolverOptionFieldSelect">
-            <span>{t("upstreams.defaultProxy")}</span>
+            <span>{t("upstreams.defaultProxy")}<HintTooltip hint={t("upstreams.defaultProxyHint")} /></span>
             <Select
               size="small"
               value={cfg.resolver.defaultProxy}
@@ -371,7 +308,7 @@ export function UpstreamsPage({ doc, onChange, validation, running, checkingUpst
             />
           </div>
           <div className="resolverOptionSwitch">
-            <span>IPv6</span>
+            <span>IPv6<HintTooltip hint={t("upstreams.ipv6Hint")} /></span>
             <Switch size="small" checked={cfg.resolver.ipv6Enabled} onChange={(checked) => updateResolver({ ipv6Enabled: checked })} />
           </div>
         </div>
@@ -402,7 +339,7 @@ export function UpstreamsPage({ doc, onChange, validation, running, checkingUpst
               <span className="workbenchPanelTitle">{t("upstreams.proxy")}</span>
               <Tag>{t("upstreams.count", { count: cfg.resolver.proxies.length })}</Tag>
             </div>
-            <Button size="small" icon={<PlusOutlined />} onClick={addProxy}>{t("upstreams.addProxy")}</Button>
+            <Button type="primary" size="small" icon={<PlusOutlined />} onClick={addProxy}>{t("upstreams.addProxy")}</Button>
           </div>
           <div className="workbenchPanelBodyFlush">
           <Table
@@ -526,24 +463,4 @@ function formatEndpointPath(path: string): string {
 
 function shouldHideEndpointPort(protocol: string, port: string, defaultPort: string): boolean {
   return (protocol === "http" || protocol === "https") && port === defaultPort;
-}
-
-function LoadingPanel() {
-  const { t } = useTranslation();
-  return (
-    <Card title={t("upstreams.loadingTitle")}>
-      <Typography.Text type="secondary">{t("upstreams.loading")}</Typography.Text>
-    </Card>
-  );
-}
-
-function FieldWithError({ error, children }: { error?: string; children: React.ReactNode }) {
-  if (!error) {
-    return <>{children}</>;
-  }
-  return (
-    <Tooltip title={error} color="red">
-      <span className="fieldErrorTooltip">{children}</span>
-    </Tooltip>
-  );
 }
