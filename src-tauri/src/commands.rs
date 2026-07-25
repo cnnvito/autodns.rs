@@ -363,3 +363,92 @@ pub fn quit_app(app: AppHandle, service: State<'_, DesktopService>) {
     service.set_allow_quit();
     app.exit(0);
 }
+
+// The localization codes sent to the frontend are recovered from error message
+// text, so any wording change in the error sources silently downgrades the
+// message to `command.unknown`. These tests pin the mapping and the wording of
+// the messages it depends on.
+#[cfg(test)]
+mod tests {
+    use super::command_error_from_message;
+
+    fn code_of(message: &str) -> String {
+        command_error_from_message(message).code
+    }
+
+    #[test]
+    fn maps_known_messages_to_codes() {
+        assert_eq!(
+            code_of("server.listen is required"),
+            "config.serverListenRequired"
+        );
+        assert_eq!(
+            code_of("DNS service is not running"),
+            "dns.serviceNotRunning"
+        );
+        assert_eq!(
+            code_of("system DNS takeover is disabled"),
+            "systemDns.takeoverDisabled"
+        );
+        assert_eq!(
+            code_of("no network adapter is selected"),
+            "systemDns.noAdapterSelected"
+        );
+        assert_eq!(
+            code_of("target DNS server is empty"),
+            "systemDns.emptyTargetServer"
+        );
+        assert_eq!(code_of("anything else"), "command.unknown");
+    }
+
+    #[test]
+    fn maps_upstream_not_found_with_name() {
+        let error = command_error_from_message("upstream not found: cloudflare");
+        assert_eq!(error.code, "dns.upstreamNotFound");
+        assert_eq!(
+            error.values.get("name").map(String::as_str),
+            Some("cloudflare")
+        );
+    }
+
+    #[test]
+    fn maps_listener_errors_with_protocol_and_listen() {
+        // Wording must match the errors built in dns.rs listener binding.
+        let in_use =
+            command_error_from_message("udp listen address 127.0.0.1:53 is already in use");
+        assert_eq!(in_use.code, "dns.listenerAddressInUse");
+        assert_eq!(
+            in_use.values.get("protocol").map(String::as_str),
+            Some("udp")
+        );
+        assert_eq!(
+            in_use.values.get("listen").map(String::as_str),
+            Some("127.0.0.1:53")
+        );
+
+        let denied = command_error_from_message("tcp listen address 0.0.0.0:53 permission denied");
+        assert_eq!(denied.code, "dns.listenerPermissionDenied");
+        assert_eq!(
+            denied.values.get("protocol").map(String::as_str),
+            Some("tcp")
+        );
+
+        let bind_failed =
+            command_error_from_message("udp listen address 10.0.0.1:53 bind failed: no route");
+        assert_eq!(bind_failed.code, "dns.listenerBindFailed");
+        assert_eq!(
+            bind_failed.values.get("reason").map(String::as_str),
+            Some("no route")
+        );
+    }
+
+    #[test]
+    fn maps_validate_error_from_its_source() {
+        // End-to-end: the message produced by CoreConfig::validate must keep
+        // mapping to its localization code.
+        let mut core = crate::config::default_local_config();
+        core.server.listen = String::new();
+        let err = core.validate().expect_err("empty listen must be rejected");
+        assert_eq!(code_of(&err.to_string()), "config.serverListenRequired");
+    }
+}

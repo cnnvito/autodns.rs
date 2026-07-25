@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 use url::Url;
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
 pub struct CoreConfig {
     pub server: CoreServerConfig,
     pub resolver: CoreResolverConfig,
@@ -16,7 +16,7 @@ pub struct CoreConfig {
     pub log: CoreLogConfig,
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
 pub struct CoreServerConfig {
     pub mode: String,
     pub listen: String,
@@ -34,7 +34,7 @@ pub struct CoreServerConfig {
     pub path: String,
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
 pub struct CoreResolverConfig {
     #[serde(default)]
     pub upstreams: Vec<CoreUpstreamConfig>,
@@ -54,7 +54,7 @@ pub struct CoreResolverConfig {
     pub ipv6_enabled: bool,
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
 pub struct CoreUpstreamConfig {
     pub name: String,
     pub endpoint: String,
@@ -64,13 +64,13 @@ pub struct CoreUpstreamConfig {
     pub proxy: String,
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
 pub struct CoreProxyConfig {
     pub name: String,
     pub endpoint: String,
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
 pub struct CoreCacheConfig {
     pub enabled: bool,
     #[serde(default)]
@@ -87,7 +87,7 @@ pub struct CoreCacheConfig {
     pub eviction_policy: String,
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
 pub struct CoreHealthcheckConfig {
     pub enabled: bool,
     #[serde(default)]
@@ -102,7 +102,7 @@ pub struct CoreHealthcheckConfig {
     pub recovery_threshold: u32,
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
 pub struct CoreLogConfig {
     #[serde(default)]
     pub level: String,
@@ -586,11 +586,24 @@ impl CoreConfig {
             }
         }
 
-        if !self.healthcheck.interval.is_empty() {
-            parse_go_duration(&self.healthcheck.interval).context("healthcheck.interval")?;
+        // A zero interval would make the health-check loop probe upstreams
+        // without any delay, so both durations must be positive when set.
+        // Keep these rules in sync with the syntax-level checks in
+        // frontend/src/features/config/validation.ts, which must stay a
+        // subset of what this authoritative validation rejects.
+        if !self.healthcheck.interval.is_empty()
+            && parse_go_duration(&self.healthcheck.interval)
+                .context("healthcheck.interval")?
+                .is_zero()
+        {
+            return Err(anyhow!("healthcheck.interval must be > 0 when set"));
         }
-        if !self.healthcheck.timeout.is_empty() {
-            parse_go_duration(&self.healthcheck.timeout).context("healthcheck.timeout")?;
+        if !self.healthcheck.timeout.is_empty()
+            && parse_go_duration(&self.healthcheck.timeout)
+                .context("healthcheck.timeout")?
+                .is_zero()
+        {
+            return Err(anyhow!("healthcheck.timeout must be > 0 when set"));
         }
         if self.healthcheck.enabled {
             if self.healthcheck.domain.is_empty() {

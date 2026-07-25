@@ -317,6 +317,7 @@ impl DesktopService {
         let _mutation = self.mutation.lock().await;
         let store = self.store()?;
         let previous = store.load_document()?;
+        let previous_core = store.runtime_config().ok();
         store.save_document(doc)?;
         let core = match store.runtime_config() {
             Ok(core) => core,
@@ -331,6 +332,14 @@ impl DesktopService {
         };
         self.logs.set_level(&core.log.level);
         if self.status().running {
+            // Frequent auto saves often persist documents whose runtime shape
+            // is unchanged (e.g. note edits); skip the reload in that case.
+            if previous_core.as_ref() == Some(&core) {
+                return Ok(ApplyConfigResult {
+                    action: ApplyConfigAction::Saved,
+                    status: self.status(),
+                });
+            }
             match self.try_reload(core.clone()).await {
                 Ok(true) => {
                     return Ok(ApplyConfigResult {
