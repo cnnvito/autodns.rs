@@ -15,7 +15,7 @@
     "@tauri-apps/plugin-notification": "^2.0.0",
     "@vitejs/plugin-react": "^6.0.2",
     "antd": "^6.4.4",
-    "i18next": "^26.3.1",
+    "i18next": "^26.3.6",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
     "react-i18next": "^17.0.8",
