@@ -303,15 +303,15 @@ impl UpstreamClient {
                 )),
             }
         };
-        if let Some(timeout) = timeout {
+        let result = if let Some(timeout) = timeout {
             tokio::time::timeout(timeout, fut)
                 .await
-                .context("upstream timeout")?
+                .context("upstream timeout")
+                .and_then(|result| result)
         } else {
             fut.await
-        }
-        .inspect(|_| self.mark_ready())
-        .inspect_err(|err| {
+        };
+        result.inspect(|_| self.mark_ready()).inspect_err(|err| {
             if !is_upstream_connecting_error(err) {
                 self.mark_transport_failure();
             }

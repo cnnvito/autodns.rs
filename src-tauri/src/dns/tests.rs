@@ -636,6 +636,29 @@ async fn upstream_pool_transport_failure_drops_cached_stream_client() {
     assert!(client.tcp.lock().is_none());
 }
 
+#[tokio::test]
+async fn upstream_timeout_drops_cached_stream_client() {
+    let mut client = test_upstream_client();
+    client.endpoint =
+        endpoint_from_url(&Url::parse("tcp://192.0.2.53:53").unwrap(), "").expect("tcp endpoint");
+    let (stream, _peer) = tokio::io::duplex(64);
+    *client.tcp.lock() = Some(LenPrefixedUpstreamClient::new(Box::new(stream)));
+    *client.endpoint_addrs.lock() = Some(vec!["192.0.2.53:53".parse().unwrap()].into());
+
+    let err = client
+        .exchange(
+            &build_query("timeout.example", TYPE_A),
+            Some(Duration::from_millis(10)),
+        )
+        .await
+        .expect_err("silent upstream should time out");
+
+    assert!(err.to_string().contains("upstream timeout"));
+    assert!(client.tcp.lock().is_none());
+    assert!(client.endpoint_addrs.lock().is_none());
+    assert_eq!(client.transport_failure_streak.load(Ordering::Acquire), 1);
+}
+
 #[test]
 fn build_resolver_defaults_empty_timeout() {
     let mut cfg = crate::config::default_local_config();
